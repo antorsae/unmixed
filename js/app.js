@@ -364,14 +364,6 @@ async function loadProfile(profileKey, url, displayName) {
   state.currentProfile = profileKey;
   state.currentProfileName = displayName;
 
-  // Auto-enable noise gate for Aalto anechoic recordings
-  const aaltoProfiles = ['mozart', 'beethoven', 'bruckner', 'mahler'];
-  if (aaltoProfiles.includes(profileKey)) {
-    state.noiseGateEnabled = true;
-    elements.noiseGateCheckbox.checked = true;
-    elements.noiseGateThresholdContainer.classList.add('enabled');
-  }
-
   showProgress('Downloading...');
   setStatus('Downloading profile...', 'info');
 
