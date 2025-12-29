@@ -4,6 +4,19 @@
 // Physical constants
 const SPEED_OF_SOUND = 343; // m/s at 20°C
 
+// Air absorption coefficients in dB per 100 meters at different frequencies
+// Based on ISO 9613-1 at 20°C, 50% relative humidity
+// Used for frequency-dependent high-frequency rolloff simulation
+const AIR_ABSORPTION = [
+  { freq: 250, alpha: 0.1 },
+  { freq: 500, alpha: 0.3 },
+  { freq: 1000, alpha: 0.6 },
+  { freq: 2000, alpha: 1.3 },
+  { freq: 4000, alpha: 2.8 },
+  { freq: 8000, alpha: 7.0 },
+  { freq: 16000, alpha: 22.0 },
+];
+
 // Stage dimensions (meters)
 const STAGE_CONFIG = {
   width: 20,        // -10m to +10m
@@ -352,12 +365,9 @@ export class AudioEngine {
     nodes.delayL.delayTime.setTargetAtTime(timeL - minTime, now, rampTime);
     nodes.delayR.delayTime.setTargetAtTime(timeR - minTime, now, rampTime);
 
-    // Air absorption - update high shelf filters
-    const absorbL = this.calculateAirAbsorptionDb(effectiveDistL);
-    const absorbR = this.calculateAirAbsorptionDb(effectiveDistR);
-
-    nodes.airAbsorbL.gain.setTargetAtTime(-absorbL, now, rampTime);
-    nodes.airAbsorbR.gain.setTargetAtTime(-absorbR, now, rampTime);
+    // Air absorption - update filter banks (ISO 9613-1 frequency-dependent)
+    this.updateAirAbsorptionFilters(nodes.airAbsorbL, effectiveDistL, now, rampTime);
+    this.updateAirAbsorptionFilters(nodes.airAbsorbR, effectiveDistR, now, rampTime);
 
     // Ground reflection (if enabled and nodes exist)
     if (nodes.groundDelayL && nodes.groundGainL) {
@@ -397,13 +407,47 @@ export class AudioEngine {
   }
 
   /**
-   * Calculate simplified air absorption in dB for high-shelf filter
-   * Approximates the complex frequency-dependent absorption
+   * Calculate air absorption in dB for each frequency band (ISO 9613-1)
+   * @param {number} distance - Distance in meters
+   * @returns {Array} - Array of {freq, gainDb} for each band
    */
-  calculateAirAbsorptionDb(distance) {
-    // Use 4kHz absorption as representative for high-shelf
-    // ~2.8 dB per 100m at 4kHz
-    return (2.8 * distance) / 100;
+  calculateAirAbsorption(distance) {
+    return AIR_ABSORPTION.map(({ freq, alpha }) => ({
+      freq,
+      gainDb: -(alpha * distance) / 100, // Negative because it's attenuation
+    }));
+  }
+
+  /**
+   * Create a filter bank for frequency-dependent air absorption
+   * Uses peaking filters at ISO 9613-1 frequency bands
+   * @param {AudioContext} ctx - Audio context to use
+   * @returns {Array} - Array of BiquadFilterNode
+   */
+  createAirAbsorptionFilterBank(ctx) {
+    return AIR_ABSORPTION.map(({ freq }) => {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'peaking';
+      filter.frequency.value = freq;
+      // Q factor chosen to give roughly octave-wide bands
+      filter.Q.value = 1.4;
+      filter.gain.value = 0;
+      return filter;
+    });
+  }
+
+  /**
+   * Update air absorption filter bank gains based on distance
+   * @param {Array} filters - Array of BiquadFilterNode
+   * @param {number} distance - Distance in meters
+   * @param {number} now - Current audio context time
+   * @param {number} rampTime - Time constant for smooth transition
+   */
+  updateAirAbsorptionFilters(filters, distance, now, rampTime) {
+    const absorption = this.calculateAirAbsorption(distance);
+    filters.forEach((filter, i) => {
+      filter.gain.setTargetAtTime(absorption[i].gainDb, now, rampTime);
+    });
   }
 
   /**
@@ -618,24 +662,28 @@ export class AudioEngine {
     const delayL = this.context.createDelay(0.1); // Max 100ms delay
     const delayR = this.context.createDelay(0.1);
 
-    const airAbsorbL = this.context.createBiquadFilter();
-    airAbsorbL.type = 'highshelf';
-    airAbsorbL.frequency.value = 2000;
-    airAbsorbL.gain.value = 0;
+    // Create filter banks for frequency-dependent air absorption (ISO 9613-1)
+    const airAbsorbL = this.createAirAbsorptionFilterBank(this.context);
+    const airAbsorbR = this.createAirAbsorptionFilterBank(this.context);
 
-    const airAbsorbR = this.context.createBiquadFilter();
-    airAbsorbR.type = 'highshelf';
-    airAbsorbR.frequency.value = 2000;
-    airAbsorbR.gain.value = 0;
-
-    // Connect: mixer -> delay -> airAbsorb -> stereo merger
+    // Connect: mixer -> delay -> filter bank (in series) -> stereo merger
     mixerL.connect(delayL);
-    delayL.connect(airAbsorbL);
-    airAbsorbL.connect(this.stereoMerger, 0, 0); // Left channel
+    // Chain the L filter bank
+    let prevNodeL = delayL;
+    for (const filter of airAbsorbL) {
+      prevNodeL.connect(filter);
+      prevNodeL = filter;
+    }
+    prevNodeL.connect(this.stereoMerger, 0, 0); // Left channel
 
     mixerR.connect(delayR);
-    delayR.connect(airAbsorbR);
-    airAbsorbR.connect(this.stereoMerger, 0, 1); // Right channel
+    // Chain the R filter bank
+    let prevNodeR = delayR;
+    for (const filter of airAbsorbR) {
+      prevNodeR.connect(filter);
+      prevNodeR = filter;
+    }
+    prevNodeR.connect(this.stereoMerger, 0, 1); // Right channel
 
     // === GROUND REFLECTION (optional) ===
     let groundDelayL, groundGainL, groundFilterL;
@@ -971,27 +1019,33 @@ export class AudioEngine {
         source.start(0);
       }
 
-      // Left channel processing
+      // Left channel processing with frequency-dependent air absorption
       const delayL = offlineContext.createDelay(0.1);
       delayL.delayTime.value = timeL - minTime;
-      const absorbL = offlineContext.createBiquadFilter();
-      absorbL.type = 'highshelf';
-      absorbL.frequency.value = 2000;
-      absorbL.gain.value = -this.calculateAirAbsorptionDb(distL);
+      const absorbL = this.createAirAbsorptionFilterBank(offlineContext);
+      const absorptionL = this.calculateAirAbsorption(distL);
+      absorbL.forEach((filter, i) => { filter.gain.value = absorptionL[i].gainDb; });
       mixerL.connect(delayL);
-      delayL.connect(absorbL);
-      absorbL.connect(stereoMerger, 0, 0);
+      let prevL = delayL;
+      for (const filter of absorbL) {
+        prevL.connect(filter);
+        prevL = filter;
+      }
+      prevL.connect(stereoMerger, 0, 0);
 
-      // Right channel processing
+      // Right channel processing with frequency-dependent air absorption
       const delayR = offlineContext.createDelay(0.1);
       delayR.delayTime.value = timeR - minTime;
-      const absorbR = offlineContext.createBiquadFilter();
-      absorbR.type = 'highshelf';
-      absorbR.frequency.value = 2000;
-      absorbR.gain.value = -this.calculateAirAbsorptionDb(distR);
+      const absorbR = this.createAirAbsorptionFilterBank(offlineContext);
+      const absorptionR = this.calculateAirAbsorption(distR);
+      absorbR.forEach((filter, i) => { filter.gain.value = absorptionR[i].gainDb; });
       mixerR.connect(delayR);
-      delayR.connect(absorbR);
-      absorbR.connect(stereoMerger, 0, 1);
+      let prevR = delayR;
+      for (const filter of absorbR) {
+        prevR.connect(filter);
+        prevR = filter;
+      }
+      prevR.connect(stereoMerger, 0, 1);
 
       // Ground reflection
       if (this.groundReflectionEnabled) {
