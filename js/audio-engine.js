@@ -33,7 +33,6 @@ export class AudioEngine {
     this.masterGainNode = null;
     this.reverbNode = null;
     this.reverbGainNode = null;
-    this.dryGainNode = null;
 
     this.trackNodes = new Map(); // trackId -> { sourceL, sourceR, ... }
     this.tracks = new Map(); // trackId -> track data
@@ -76,10 +75,6 @@ export class AudioEngine {
     this.stereoMerger.connect(this.masterGainNode);
 
     // Create reverb chain
-    this.dryGainNode = this.context.createGain();
-    this.dryGainNode.gain.value = 1;
-    this.dryGainNode.connect(this.masterGainNode);
-
     this.reverbGainNode = this.context.createGain();
     this.reverbGainNode.gain.value = this.reverbMix;
     this.reverbGainNode.connect(this.masterGainNode);
@@ -151,20 +146,6 @@ export class AudioEngine {
     const totalVertical = sourceHeight + micHeight;
 
     return Math.sqrt(horizontalDist * horizontalDist + totalVertical * totalVertical);
-  }
-
-  /**
-   * Calculate air absorption gain for a given distance
-   * Returns an object with gains at different frequency bands
-   */
-  calculateAirAbsorption(distance) {
-    const gains = {};
-    for (const [freq, alpha] of Object.entries(AIR_ABSORPTION)) {
-      // alpha is dB per 100m
-      const attenuationDb = (alpha * distance) / 100;
-      gains[freq] = Math.pow(10, -attenuationDb / 20);
-    }
-    return gains;
   }
 
   /**
@@ -339,10 +320,10 @@ export class AudioEngine {
     const effectiveDistL = Math.max(distL, minDist);
     const effectiveDistR = Math.max(distR, minDist);
 
-    // 1/d amplitude falloff
+    // 1/d amplitude falloff (capped at 1.0 to prevent clipping)
     const refDist = 3; // Reference distance for unity gain
-    const ampL = refDist / effectiveDistL;
-    const ampR = refDist / effectiveDistR;
+    const ampL = Math.min(1.0, refDist / effectiveDistL);
+    const ampR = Math.min(1.0, refDist / effectiveDistR);
 
     // Apply track gain and mute/solo
     const hasSolo = Array.from(this.tracks.values()).some(t => t.solo);
@@ -420,9 +401,11 @@ export class AudioEngine {
       }
     }
 
-    // Reverb send based on mode
-    if (nodes.reverbSend) {
-      nodes.reverbSend.gain.value = this.calculateReverbSend(track.y);
+    // Reverb send based on mode (stereo - L and R have same level)
+    if (nodes.reverbSendL && nodes.reverbSendR) {
+      const reverbLevel = this.calculateReverbSend(track.y);
+      nodes.reverbSendL.gain.value = reverbLevel;
+      nodes.reverbSendR.gain.value = reverbLevel;
     }
   }
 
@@ -545,14 +528,15 @@ export class AudioEngine {
   /**
    * Set reverb preset
    */
-  setReverbPreset(preset, impulseBuffer) {
+  setReverbPreset(preset, impulseBuffer, wetLevel = 0.3) {
     this.reverbPreset = preset;
+    this.reverbMix = wetLevel; // Use preset's wet level
 
     if (preset === 'none') {
       this.reverbGainNode.gain.value = 0;
     } else if (impulseBuffer) {
       this.reverbNode.buffer = impulseBuffer;
-      this.reverbGainNode.gain.value = this.reverbMix;
+      this.reverbGainNode.gain.value = wetLevel;
     }
   }
 
@@ -564,8 +548,10 @@ export class AudioEngine {
 
     for (const [id, track] of this.tracks) {
       const nodes = this.trackNodes.get(id);
-      if (nodes && nodes.reverbSend) {
-        nodes.reverbSend.gain.value = this.calculateReverbSend(track.y);
+      if (nodes && nodes.reverbSendL && nodes.reverbSendR) {
+        const reverbLevel = this.calculateReverbSend(track.y);
+        nodes.reverbSendL.gain.value = reverbLevel;
+        nodes.reverbSendR.gain.value = reverbLevel;
       }
     }
   }
@@ -690,12 +676,15 @@ export class AudioEngine {
       groundFilterR.connect(this.stereoMerger, 0, 1);
     }
 
-    // === REVERB SEND ===
-    const reverbSend = this.context.createGain();
-    // Send mixed signal to reverb
-    mixerL.connect(reverbSend);
-    mixerR.connect(reverbSend);
-    reverbSend.connect(this.reverbNode);
+    // === REVERB SEND (stereo - preserve L/R separation) ===
+    const reverbSendL = this.context.createGain();
+    const reverbSendR = this.context.createGain();
+    const reverbMerger = this.context.createChannelMerger(2);
+    mixerL.connect(reverbSendL);
+    mixerR.connect(reverbSendR);
+    reverbSendL.connect(reverbMerger, 0, 0);
+    reverbSendR.connect(reverbMerger, 0, 1);
+    reverbMerger.connect(this.reverbNode);
 
     // Store nodes
     const nodes = {
@@ -717,8 +706,11 @@ export class AudioEngine {
       groundGainR,
       groundFilterL,
       groundFilterR,
-      reverbSend,
+      reverbSendL,
+      reverbSendR,
+      reverbMerger,
       hasDirectivity,
+      ended: false,
     };
 
     this.trackNodes.set(id, nodes);
@@ -734,13 +726,10 @@ export class AudioEngine {
 
     // Handle playback end
     sourceFront.onended = () => {
+      nodes.ended = true;
       if (this.isPlaying) {
         const allEnded = Array.from(this.trackNodes.values()).every(n => {
-          try {
-            return !n.sourceFront.buffer || n.sourceFront.playbackState === 3;
-          } catch {
-            return true;
-          }
+          return !n.sourceFront.buffer || n.ended;
         });
 
         if (allEnded && this.onPlaybackEnd) {
@@ -926,48 +915,88 @@ export class AudioEngine {
       if (track.muted) continue;
       if (hasSolo && !track.solo) continue;
 
-      const source = offlineContext.createBufferSource();
-      source.buffer = track.buffer;
-
       const sourcePos = this.normalizedToMeters(track.x, track.y);
       const distL = Math.max(0.5, this.calculateDistance(sourcePos, this.micL));
       const distR = Math.max(0.5, this.calculateDistance(sourcePos, this.micR));
 
       const refDist = 3;
-      const ampL = refDist / distL;
-      const ampR = refDist / distR;
+      // Limit gain to prevent clipping (cap at 1.0 for close sources)
+      const ampL = Math.min(1.0, refDist / distL);
+      const ampR = Math.min(1.0, refDist / distR);
 
       const timeL = distL / SPEED_OF_SOUND;
       const timeR = distR / SPEED_OF_SOUND;
       const minTime = Math.min(timeL, timeR);
 
-      // Left channel
-      const gainL = offlineContext.createGain();
-      gainL.gain.value = ampL * track.gain;
+      // Check for directivity blending
+      const hasDirectivity = track.frontBuffer && track.bellBuffer;
+      const blendL = this.calculateDirectivityBlend(sourcePos, this.micL);
+      const blendR = this.calculateDirectivityBlend(sourcePos, this.micR);
+
+      // Create mixer nodes for blending front/bell sources
+      const mixerL = offlineContext.createGain();
+      const mixerR = offlineContext.createGain();
+
+      if (hasDirectivity) {
+        // Front source
+        const sourceFront = offlineContext.createBufferSource();
+        sourceFront.buffer = track.frontBuffer;
+        const frontGainL = offlineContext.createGain();
+        const frontGainR = offlineContext.createGain();
+        frontGainL.gain.value = ampL * track.gain * blendL.front;
+        frontGainR.gain.value = ampR * track.gain * blendR.front;
+        sourceFront.connect(frontGainL);
+        sourceFront.connect(frontGainR);
+        frontGainL.connect(mixerL);
+        frontGainR.connect(mixerR);
+        sourceFront.start(0);
+
+        // Bell source
+        const sourceBell = offlineContext.createBufferSource();
+        sourceBell.buffer = track.bellBuffer;
+        const bellGainL = offlineContext.createGain();
+        const bellGainR = offlineContext.createGain();
+        bellGainL.gain.value = ampL * track.gain * blendL.bell;
+        bellGainR.gain.value = ampR * track.gain * blendR.bell;
+        sourceBell.connect(bellGainL);
+        sourceBell.connect(bellGainR);
+        bellGainL.connect(mixerL);
+        bellGainR.connect(mixerR);
+        sourceBell.start(0);
+      } else {
+        // Single source (no directivity)
+        const source = offlineContext.createBufferSource();
+        source.buffer = track.buffer;
+        const gainL = offlineContext.createGain();
+        const gainR = offlineContext.createGain();
+        gainL.gain.value = ampL * track.gain;
+        gainR.gain.value = ampR * track.gain;
+        source.connect(gainL);
+        source.connect(gainR);
+        gainL.connect(mixerL);
+        gainR.connect(mixerR);
+        source.start(0);
+      }
+
+      // Left channel processing
       const delayL = offlineContext.createDelay(0.1);
       delayL.delayTime.value = timeL - minTime;
       const absorbL = offlineContext.createBiquadFilter();
       absorbL.type = 'highshelf';
       absorbL.frequency.value = 2000;
       absorbL.gain.value = -this.calculateAirAbsorptionDb(distL);
-
-      source.connect(gainL);
-      gainL.connect(delayL);
+      mixerL.connect(delayL);
       delayL.connect(absorbL);
       absorbL.connect(stereoMerger, 0, 0);
 
-      // Right channel
-      const gainR = offlineContext.createGain();
-      gainR.gain.value = ampR * track.gain;
+      // Right channel processing
       const delayR = offlineContext.createDelay(0.1);
       delayR.delayTime.value = timeR - minTime;
       const absorbR = offlineContext.createBiquadFilter();
       absorbR.type = 'highshelf';
       absorbR.frequency.value = 2000;
       absorbR.gain.value = -this.calculateAirAbsorptionDb(distR);
-
-      source.connect(gainR);
-      gainR.connect(delayR);
+      mixerR.connect(delayR);
       delayR.connect(absorbR);
       absorbR.connect(stereoMerger, 0, 1);
 
@@ -981,41 +1010,45 @@ export class AudioEngine {
         );
 
         const groundGainL = offlineContext.createGain();
-        groundGainL.gain.value = (refDist / groundDistL) * STAGE_CONFIG.groundReflectionCoeff * track.gain;
+        groundGainL.gain.value = Math.min(1.0, refDist / groundDistL) * STAGE_CONFIG.groundReflectionCoeff * track.gain;
         const groundDelayL = offlineContext.createDelay(0.1);
-        groundDelayL.delayTime.value = (groundDistL / SPEED_OF_SOUND) - timeL;
+        groundDelayL.delayTime.value = Math.max(0, (groundDistL / SPEED_OF_SOUND) - timeL);
         const groundFilterL = offlineContext.createBiquadFilter();
         groundFilterL.type = 'lowpass';
         groundFilterL.frequency.value = 8000;
-
-        source.connect(groundGainL);
+        mixerL.connect(groundGainL);
         groundGainL.connect(groundDelayL);
         groundDelayL.connect(groundFilterL);
         groundFilterL.connect(stereoMerger, 0, 0);
 
         const groundGainR = offlineContext.createGain();
-        groundGainR.gain.value = (refDist / groundDistR) * STAGE_CONFIG.groundReflectionCoeff * track.gain;
+        groundGainR.gain.value = Math.min(1.0, refDist / groundDistR) * STAGE_CONFIG.groundReflectionCoeff * track.gain;
         const groundDelayR = offlineContext.createDelay(0.1);
-        groundDelayR.delayTime.value = (groundDistR / SPEED_OF_SOUND) - timeR;
+        groundDelayR.delayTime.value = Math.max(0, (groundDistR / SPEED_OF_SOUND) - timeR);
         const groundFilterR = offlineContext.createBiquadFilter();
         groundFilterR.type = 'lowpass';
         groundFilterR.frequency.value = 8000;
-
-        source.connect(groundGainR);
+        mixerR.connect(groundGainR);
         groundGainR.connect(groundDelayR);
         groundDelayR.connect(groundFilterR);
         groundFilterR.connect(stereoMerger, 0, 1);
       }
 
-      // Reverb send
+      // Reverb send (stereo - send L and R separately through stereo merger)
       if (reverbConvolver) {
-        const reverbSend = offlineContext.createGain();
-        reverbSend.gain.value = this.calculateReverbSend(track.y);
-        source.connect(reverbSend);
-        reverbSend.connect(reverbConvolver);
+        const reverbSendL = offlineContext.createGain();
+        const reverbSendR = offlineContext.createGain();
+        const reverbLevel = this.calculateReverbSend(track.y);
+        reverbSendL.gain.value = reverbLevel;
+        reverbSendR.gain.value = reverbLevel;
+        mixerL.connect(reverbSendL);
+        mixerR.connect(reverbSendR);
+        // Create stereo merger for reverb input
+        const reverbMerger = offlineContext.createChannelMerger(2);
+        reverbSendL.connect(reverbMerger, 0, 0);
+        reverbSendR.connect(reverbMerger, 0, 1);
+        reverbMerger.connect(reverbConvolver);
       }
-
-      source.start(0);
     }
 
     const startRenderTime = performance.now();

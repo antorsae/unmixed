@@ -1,7 +1,7 @@
 // Main application entry point
 
 import { PROFILES, FAMILY_ORDER, FAMILY_COLORS } from './positions.js';
-import { parseTrackFilename, applyInstanceSpreading, generateTrackId, sortTracksByFamily, getMicLabel } from './track-parser.js';
+import { parseTrackFilename, generateTrackId, sortTracksByFamily } from './track-parser.js';
 import { AudioEngine } from './audio-engine.js';
 import { StageCanvas } from './stage-canvas.js?v=3';
 import { loadZipFromUrl, loadZipFromFile, extractAudioFiles, loadAudioFiles, mightNeedCorsProxy } from './zip-loader.js?v=3';
@@ -40,6 +40,9 @@ const noiseGatePendingTasks = new Map();
 // Render state
 let renderAbortController = null;
 
+// Debounced save function (created once, reused)
+let debouncedSaveSession = null;
+
 // DOM elements
 const elements = {};
 
@@ -73,8 +76,8 @@ async function init() {
   // Set up keyboard shortcuts
   setupKeyboardShortcuts();
 
-  // Set up auto-save
-  const debouncedSave = debounce(() => {
+  // Set up auto-save (create debounced function once)
+  debouncedSaveSession = debounce(() => {
     if (state.tracks.size > 0) {
       saveCurrentSession();
     }
@@ -355,6 +358,7 @@ async function loadProfile(profileKey, url, displayName) {
   // Stop current playback and clear tracks
   stopPlayback();
   clearTracks();
+  pendingFiles = []; // Clear any stale pending files
 
   state.isLoading = true;
   state.currentProfile = profileKey;
@@ -402,22 +406,31 @@ async function loadProfile(profileKey, url, displayName) {
     setStatus(error.message, 'error');
     showToast(error.message, 'error');
     hideProgress();
+    pendingFiles = []; // Clear pending files on error
   }
 
   state.isLoading = false;
 }
 
 /**
- * Handle ZIP file upload
+ * Handle ZIP file upload from input element
  */
 async function handleZipUpload(e) {
   const file = e.target.files[0];
   if (!file) return;
+  await handleZipFile(file);
+  elements.zipInput.value = '';
+}
 
+/**
+ * Handle ZIP file (from upload or drag/drop)
+ */
+async function handleZipFile(file) {
   if (state.isLoading) return;
 
   stopPlayback();
   clearTracks();
+  pendingFiles = []; // Clear any stale pending files
 
   state.isLoading = true;
   state.currentProfile = 'custom';
@@ -432,8 +445,8 @@ async function handleZipUpload(e) {
     setStatus('Extracting audio files...', 'info');
     updateProgress(0);
 
-    await extractAudioFiles(zip, async (file) => {
-      await processAudioFile(file.filename, file.arrayBuffer);
+    await extractAudioFiles(zip, async (f) => {
+      await processAudioFile(f.filename, f.arrayBuffer);
     }, updateProgress);
 
     finalizeTracks();
@@ -447,10 +460,10 @@ async function handleZipUpload(e) {
     setStatus(error.message, 'error');
     showToast(error.message, 'error');
     hideProgress();
+    pendingFiles = []; // Clear pending files on error
   }
 
   state.isLoading = false;
-  elements.zipInput.value = '';
 }
 
 /**
@@ -495,8 +508,8 @@ async function handleDrop(e) {
 
   // Check if it's a ZIP file
   if (files.length === 1 && files[0].name.endsWith('.zip')) {
-    elements.zipInput.files = files;
-    await handleZipUpload({ target: elements.zipInput });
+    // Handle ZIP file directly (can't assign to input.files - it's read-only)
+    await handleZipFile(files[0]);
   } else {
     await loadFilesArray(files);
   }
@@ -510,6 +523,7 @@ async function loadFilesArray(files) {
 
   stopPlayback();
   clearTracks();
+  pendingFiles = []; // Clear any stale pending files
 
   state.isLoading = true;
   state.currentProfile = 'custom';
@@ -534,6 +548,7 @@ async function loadFilesArray(files) {
     setStatus(error.message, 'error');
     showToast(error.message, 'error');
     hideProgress();
+    pendingFiles = []; // Clear pending files on error
   }
 
   state.isLoading = false;
@@ -1360,7 +1375,8 @@ async function reprocessTracksWithNoiseGate() {
  */
 function updateReverb() {
   const ir = reverbManager.getImpulseResponse(state.reverbPreset);
-  audioEngine.setReverbPreset(state.reverbPreset, ir);
+  const presetInfo = reverbManager.getPresetInfo(state.reverbPreset);
+  audioEngine.setReverbPreset(state.reverbPreset, ir, presetInfo.wet || 0);
   audioEngine.setReverbMode(state.reverbMode);
 }
 
@@ -1611,9 +1627,9 @@ function saveCurrentSession() {
 function markUnsaved() {
   state.hasUnsavedChanges = true;
 
-  // Auto-save after a delay
-  if (state.tracks.size > 0) {
-    debounce(saveCurrentSession, 1000)();
+  // Auto-save after a delay (use pre-created debounced function)
+  if (debouncedSaveSession) {
+    debouncedSaveSession();
   }
 }
 

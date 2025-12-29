@@ -56,19 +56,14 @@ export function applyNoiseGate(audioBuffer, options = {}) {
     envelope[i] = Math.sqrt(envelope[i] / numChannels);
   }
 
-  // Compute RMS in sliding window
+  // Compute RMS in sliding window (use integer indices to avoid NaN)
   const rmsEnvelope = new Float32Array(length);
-  let windowSum = 0;
-
-  // Initialize window
-  for (let i = 0; i < Math.min(windowSamples, length); i++) {
-    windowSum += envelope[i] * envelope[i];
-  }
+  const halfWindow = Math.floor(windowSamples / 2);
 
   for (let i = 0; i < length; i++) {
-    // Compute RMS for current window
-    const windowStart = Math.max(0, i - windowSamples / 2);
-    const windowEnd = Math.min(length, i + windowSamples / 2);
+    // Compute RMS for current window with integer bounds
+    const windowStart = Math.max(0, i - halfWindow);
+    const windowEnd = Math.min(length, i + halfWindow + 1);
     const windowLen = windowEnd - windowStart;
 
     let sum = 0;
