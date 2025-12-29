@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orchestral Anechoic Stereo Mixer</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- ZIP extraction -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- MP3 encoding -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <h1>Orchestral Anechoic Stereo Mixer</h1>
+      <span id="profile-name"></span>
+    </header>
+
+    <!-- Main content area -->
+    <main id="main-content">
+      <!-- Left sidebar: Profile selector -->
+      <aside id="profile-panel">
+        <h2>Load Profile</h2>
+        <div id="profile-options">
+          <label class="profile-radio">
+            <input type="radio" name="profile" value="mozart" checked>
+            <span>Mozart - Don Giovanni</span>
+          </label>
+          <label class="profile-radio">
+            <input type="radio" name="profile" value="beethoven">
+            <span>Beethoven - Symphony No. 7</span>
+          </label>
+          <label class="profile-radio">
+            <input type="radio" name="profile" value="bruckner">
+            <span>Bruckner - Symphony No. 8</span>
+          </label>
+          <label class="profile-radio">
+            <input type="radio" name="profile" value="mahler">
+            <span>Mahler - Symphony No. 1</span>
+          </label>
+        </div>
+        <button id="load-profile-btn" class="btn primary">Load Profile</button>
+
+        <div id="load-progress" class="hidden">
+          <div class="progress-bar">
+            <div class="progress-fill"></div>
+          </div>
+          <span class="progress-text">Loading...</span>
+        </div>
+
+        <div class="divider">
+          <span>OR</span>
+        </div>
+
+        <button id="upload-zip-btn" class="btn secondary">Upload ZIP</button>
+        <input type="file" id="zip-input" accept=".zip" class="hidden">
+
+        <div class="divider">
+          <span>OR</span>
+        </div>
+
+        <div id="drop-zone">
+          <p>Drop audio files here</p>
+          <p class="hint">MP3, WAV, FLAC, OGG, AAC</p>
+          <input type="file" id="files-input" multiple accept="audio/*" class="hidden">
+          <button id="browse-files-btn" class="btn secondary">Browse Files</button>
+        </div>
+
+        <div id="status-text"></div>
+      </aside>
+
+      <!-- Stage canvas -->
+      <section id="stage-section">
+        <canvas id="stage-canvas"></canvas>
+        <div id="stage-labels">
+          <span class="label-left">L</span>
+          <span class="label-center">C</span>
+          <span class="label-right">R</span>
+          <span class="label-front">Front</span>
+          <span class="label-back">Back</span>
+          <span class="label-audience">AUDIENCE</span>
+        </div>
+      </section>
+    </main>
+
+    <!-- Track list (collapsible) -->
+    <section id="track-list-section" class="collapsed">
+      <h2 id="track-list-header">
+        <span class="collapse-icon">▶</span>
+        Tracks
+        <span id="track-count"></span>
+      </h2>
+      <div id="track-list"></div>
+    </section>
+
+    <!-- Transport controls -->
+    <footer id="transport">
+      <div class="transport-row">
+        <div class="transport-buttons">
+          <button id="rewind-btn" class="btn transport-btn" title="Rewind (R)">
+            <span class="icon">&#x23EE;</span>
+          </button>
+          <button id="play-btn" class="btn transport-btn primary" title="Play/Pause (Space)">
+            <span class="icon play-icon">&#x25B6;</span>
+            <span class="icon pause-icon hidden">&#x23F8;</span>
+          </button>
+          <button id="stop-btn" class="btn transport-btn" title="Stop">
+            <span class="icon">&#x23F9;</span>
+          </button>
+        </div>
+
+        <div class="seek-container">
+          <input type="range" id="seek-bar" min="0" max="100" value="0" step="0.1">
+          <span id="time-display">00:00 / 00:00</span>
+        </div>
+
+        <div class="master-gain-container">
+          <label for="master-gain">Master</label>
+          <input type="range" id="master-gain" min="0" max="1" value="0.8" step="0.01">
+          <span id="master-gain-value">0.80</span>
+        </div>
+      </div>
+
+      <div class="transport-row">
+        <div class="reverb-controls">
+          <label for="reverb-preset">Reverb:</label>
+          <select id="reverb-preset">
+            <option value="none" selected>None</option>
+            <option value="small-room">Small Room</option>
+            <option value="chamber">Chamber</option>
+            <option value="concert-hall">Concert Hall</option>
+            <option value="cathedral">Cathedral</option>
+            <option value="outdoor-amphitheater">Outdoor Amphitheater</option>
+          </select>
+          <div class="reverb-mode">
+            <label>
+              <input type="radio" name="reverb-mode" value="depth" checked>
+              Depth-based
+            </label>
+            <label>
+              <input type="radio" name="reverb-mode" value="uniform">
+              Uniform
+            </label>
+          </div>
+        </div>
+
+        <div class="physics-controls">
+          <div class="mic-separation-control">
+            <label for="mic-separation">Mic Separation:</label>
+            <input type="range" id="mic-separation" min="0.5" max="6" value="2" step="0.1">
+            <span id="mic-separation-value">2.0m</span>
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="ground-reflection-checkbox">
+            Ground Reflection
+          </label>
+        </div>
+
+        <div class="action-buttons">
+          <button id="reset-positions-btn" class="btn secondary">Reset Positions</button>
+          <button id="reset-all-btn" class="btn secondary">Reset All</button>
+        </div>
+
+        <div class="export-buttons">
+          <button id="download-wav-btn" class="btn primary" disabled>Download WAV</button>
+          <button id="download-mp3-btn" class="btn primary" disabled>Download MP3</button>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Toast container -->
+    <div id="toast-container"></div>
+
+    <!-- Render progress modal -->
+    <div id="render-modal" class="modal hidden">
+      <div class="modal-content">
+        <h3>Rendering Mix</h3>
+        <div class="progress-bar">
+          <div class="progress-fill" id="render-progress-fill"></div>
+        </div>
+        <span id="render-progress-text">0%</span>
+        <button id="cancel-render-btn" class="btn secondary">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Restore session modal -->
+    <div id="restore-modal" class="modal hidden">
+      <div class="modal-content">
+        <h3>Restore Previous Session?</h3>
+        <p>A previous session was found. Would you like to restore it?</p>
+        <div class="modal-buttons">
+          <button id="restore-yes-btn" class="btn primary">Yes, Restore</button>
+          <button id="restore-no-btn" class="btn secondary">No, Start Fresh</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mobile warning -->
+    <div id="mobile-warning" class="hidden">
+      <p>Desktop browser recommended for best experience.</p>
+      <button id="dismiss-mobile-warning" class="btn secondary">Continue Anyway</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js?v=2"></script>
+</body>
+</html>
