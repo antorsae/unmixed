@@ -6,10 +6,10 @@ self.onmessage = function(e) {
 
   const {
     thresholdDb = -48,
-    attackMs = 2,
-    holdMs = 30,
-    releaseMs = 50,
-    windowMs = 10,
+    attackMs = 5,
+    holdMs = 100,
+    releaseMs = 80,
+    windowMs = 20,
   } = options;
 
   const numChannels = channelData.length;
@@ -135,8 +135,8 @@ self.onmessage = function(e) {
     gateGain[i] = gain;
   }
 
-  // Fourth pass: O(n) sliding window smoothing (2ms)
-  const smoothingSamples = Math.max(1, Math.floor(2 * sampleRate / 1000));
+  // Fourth pass: O(n) sliding window smoothing (1ms - smaller to preserve transients)
+  const smoothingSamples = Math.max(1, Math.floor(1 * sampleRate / 1000));
   const smoothedGain = new Float32Array(length);
   let smoothSum = 0;
 

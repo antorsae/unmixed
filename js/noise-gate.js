@@ -135,9 +135,9 @@ export function applyNoiseGate(audioBuffer, options = {}) {
     gateGain[i] = currentGain;
   }
 
-  // Apply smoothing to gate gain to avoid clicks
+  // Apply smoothing to gate gain to avoid clicks (1ms - smaller to preserve transients)
   const smoothedGain = new Float32Array(length);
-  const smoothingSamples = Math.floor(2 * sampleRate / 1000); // 2ms smoothing
+  const smoothingSamples = Math.floor(1 * sampleRate / 1000); // 1ms smoothing
 
   for (let i = 0; i < length; i++) {
     let sum = 0;
@@ -237,8 +237,8 @@ export function estimateNoiseFloor(buffer) {
  */
 export const DEFAULT_NOISE_GATE_OPTIONS = {
   thresholdDb: -48,
-  attackMs: 2,
-  holdMs: 30,
-  releaseMs: 50,
-  windowMs: 10,
+  attackMs: 5,
+  holdMs: 100,
+  releaseMs: 80,
+  windowMs: 20,
 };
