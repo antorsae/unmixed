@@ -9,6 +9,7 @@ import { audioBufferToWav, createWavBlob, downloadBlob, generateFilename } from 
 import { audioBufferToMp3, isLameJsAvailable } from './mp3-encoder.js';
 import { ReverbManager, REVERB_PRESETS } from './reverb.js';
 import { saveSession, loadSession, clearSession, hasSession, createSessionState, applySessionToTracks, setupUnloadWarning, debounce } from './persistence.js';
+import { applyNoiseGate, copyAudioBuffer, DEFAULT_NOISE_GATE_OPTIONS } from './noise-gate.js';
 
 // Application state
 const state = {
@@ -20,6 +21,8 @@ const state = {
   reverbMode: 'depth',
   groundReflectionEnabled: false,
   micSeparation: 2, // meters
+  noiseGateEnabled: false,
+  noiseGateThreshold: DEFAULT_NOISE_GATE_OPTIONS.thresholdDb,
   isLoading: false,
   hasUnsavedChanges: false,
 };
@@ -131,6 +134,10 @@ function cacheElements() {
   elements.restoreNoBtn = document.getElementById('restore-no-btn');
   elements.mobileWarning = document.getElementById('mobile-warning');
   elements.dismissMobileWarning = document.getElementById('dismiss-mobile-warning');
+  elements.noiseGateCheckbox = document.getElementById('noise-gate-checkbox');
+  elements.noiseGateThreshold = document.getElementById('noise-gate-threshold');
+  elements.noiseGateThresholdValue = document.getElementById('noise-gate-threshold-value');
+  elements.noiseGateThresholdContainer = document.getElementById('noise-gate-threshold-container');
 }
 
 /**
@@ -167,6 +174,10 @@ function setupEventListeners() {
   // Physics controls
   elements.groundReflectionCheckbox.addEventListener('change', handleGroundReflectionChange);
   elements.micSeparation.addEventListener('input', handleMicSeparationChange);
+
+  // Noise gate controls
+  elements.noiseGateCheckbox.addEventListener('change', handleNoiseGateToggle);
+  elements.noiseGateThreshold.addEventListener('input', handleNoiseGateThresholdChange);
 
   // Track list toggle
   elements.trackListHeader.addEventListener('click', toggleTrackList);
@@ -340,6 +351,14 @@ async function loadProfile(profileKey, url, displayName) {
   state.isLoading = true;
   state.currentProfile = profileKey;
   state.currentProfileName = displayName;
+
+  // Auto-enable noise gate for Aalto anechoic recordings
+  const aaltoProfiles = ['mozart', 'beethoven', 'bruckner', 'mahler'];
+  if (aaltoProfiles.includes(profileKey)) {
+    state.noiseGateEnabled = true;
+    elements.noiseGateCheckbox.checked = true;
+    elements.noiseGateThresholdContainer.classList.add('enabled');
+  }
 
   showProgress('Downloading...');
   setStatus('Downloading profile...', 'info');
@@ -576,11 +595,31 @@ function createTracksFromPendingFiles() {
     const primary = files[0];
     const id = generateTrackId(primary.filename);
 
-    // Build alternate buffers map
+    // Build alternate buffers map (store both original and processed)
+    const originalAlternateBuffers = new Map();
     const alternateBuffers = new Map();
     for (const file of files) {
-      alternateBuffers.set(file.micPosition || '6', file.audioBuffer);
+      const micPos = file.micPosition || '6';
+      originalAlternateBuffers.set(micPos, file.audioBuffer);
+      // Apply noise gate if enabled
+      if (state.noiseGateEnabled) {
+        alternateBuffers.set(micPos, applyNoiseGate(file.audioBuffer, {
+          ...DEFAULT_NOISE_GATE_OPTIONS,
+          thresholdDb: state.noiseGateThreshold,
+        }));
+      } else {
+        alternateBuffers.set(micPos, file.audioBuffer);
+      }
     }
+
+    // Process primary buffer
+    const originalBuffer = primary.audioBuffer;
+    const processedBuffer = state.noiseGateEnabled
+      ? applyNoiseGate(originalBuffer, {
+          ...DEFAULT_NOISE_GATE_OPTIONS,
+          thresholdDb: state.noiseGateThreshold,
+        })
+      : originalBuffer;
 
     // Create track object
     const track = {
@@ -596,8 +635,10 @@ function createTracksFromPendingFiles() {
       muted: false,
       solo: false,
       micPosition: primary.micPosition || '6',
-      audioBuffer: primary.audioBuffer,
+      audioBuffer: processedBuffer,
+      originalBuffer: originalBuffer, // Store original for re-processing
       alternateBuffers: alternateBuffers.size > 1 ? alternateBuffers : null,
+      originalAlternateBuffers: originalAlternateBuffers.size > 1 ? originalAlternateBuffers : null,
       availableMics: alternateBuffers.size > 1 ? Array.from(alternateBuffers.keys()) : null,
     };
 
@@ -1113,6 +1154,80 @@ function handleMicSeparationChange(e) {
   audioEngine.setMicSeparation(separation);
   stageCanvas.setMicSeparation(separation);
   markUnsaved();
+}
+
+/**
+ * Handle noise gate toggle
+ */
+function handleNoiseGateToggle(e) {
+  const enabled = e.target.checked;
+  state.noiseGateEnabled = enabled;
+
+  // Update threshold control visibility
+  elements.noiseGateThresholdContainer.classList.toggle('enabled', enabled);
+
+  // Re-process all tracks with new noise gate setting
+  reprocessTracksWithNoiseGate();
+  markUnsaved();
+}
+
+/**
+ * Handle noise gate threshold change
+ */
+function handleNoiseGateThresholdChange(e) {
+  const threshold = parseInt(e.target.value, 10);
+  state.noiseGateThreshold = threshold;
+  elements.noiseGateThresholdValue.textContent = `${threshold}dB`;
+
+  // Re-process tracks if noise gate is enabled
+  if (state.noiseGateEnabled) {
+    reprocessTracksWithNoiseGate();
+  }
+  markUnsaved();
+}
+
+/**
+ * Re-process all tracks with current noise gate settings
+ */
+function reprocessTracksWithNoiseGate() {
+  for (const [id, track] of state.tracks) {
+    // Use original buffer if available, otherwise the current buffer
+    const sourceBuffer = track.originalBuffer || track.audioBuffer;
+
+    if (state.noiseGateEnabled) {
+      // Apply noise gate
+      const processedBuffer = applyNoiseGate(sourceBuffer, {
+        ...DEFAULT_NOISE_GATE_OPTIONS,
+        thresholdDb: state.noiseGateThreshold,
+      });
+      track.audioBuffer = processedBuffer;
+    } else {
+      // Restore original
+      track.audioBuffer = track.originalBuffer ? copyAudioBuffer(track.originalBuffer) : track.audioBuffer;
+    }
+
+    // Update audio engine with new buffer
+    audioEngine.updateTrackBuffer(id, track.audioBuffer);
+
+    // Also process alternate buffers if present
+    if (track.originalAlternateBuffers) {
+      track.alternateBuffers = new Map();
+      for (const [micPos, origBuf] of track.originalAlternateBuffers) {
+        if (state.noiseGateEnabled) {
+          track.alternateBuffers.set(micPos, applyNoiseGate(origBuf, {
+            ...DEFAULT_NOISE_GATE_OPTIONS,
+            thresholdDb: state.noiseGateThreshold,
+          }));
+        } else {
+          track.alternateBuffers.set(micPos, copyAudioBuffer(origBuf));
+        }
+      }
+      // Update directivity buffers in audio engine
+      audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+    }
+  }
+
+  showToast(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate disabled', 'info');
 }
 
 /**

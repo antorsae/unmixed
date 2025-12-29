@@ -47,6 +47,16 @@ The interactive stage canvas provides intuitive control:
 - **Color-Coded Families**: Strings (brown), Woodwinds (olive), Brass (gold), Percussion (blue), Keyboard (purple), Voice (red)
 - **Auto-Prefix Stripping**: Common prefixes like "Mozart " are automatically removed for cleaner display
 
+### Noise Gate
+
+The Aalto anechoic recordings were made with uniform gain settings across all instruments, which can result in audible noise floor in quieter instruments. The built-in noise gate addresses this:
+
+- **Automatic Enabling**: Noise gate is automatically enabled when loading Aalto profiles
+- **Adjustable Threshold**: -60dB to -30dB range (default -48dB)
+- **Professional Parameters**: 2ms attack, 30ms hold, 50ms release for musical gating
+- **Real-Time Re-processing**: Changing threshold re-processes all tracks immediately
+- **Original Buffer Preservation**: Original audio is preserved for threshold adjustments
+
 ### Reverb System
 
 Add concert hall ambience with multiple reverb presets:

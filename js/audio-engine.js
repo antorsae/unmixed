@@ -485,7 +485,7 @@ export class AudioEngine {
   }
 
   /**
-   * Update track audio buffer (for mic position changes)
+   * Update track audio buffer (for noise gate re-processing)
    */
   updateTrackBuffer(id, newBuffer) {
     const track = this.tracks.get(id);
@@ -499,6 +499,32 @@ export class AudioEngine {
     }
 
     // If playing, reconnect with new buffer
+    if (this.isPlaying) {
+      const currentTime = this.getCurrentTime();
+      this.disconnectTrack(id);
+      this.connectTrack(id, currentTime);
+    }
+  }
+
+  /**
+   * Update track directivity buffers (for noise gate re-processing)
+   */
+  updateTrackDirectivityBuffers(id, alternateBuffers) {
+    const track = this.tracks.get(id);
+    if (!track) return;
+
+    track.directivityBuffers = alternateBuffers;
+
+    // Update front/bell buffers for directivity
+    if (alternateBuffers && alternateBuffers.size > 1) {
+      track.frontBuffer = alternateBuffers.get('6') || track.buffer;
+      track.bellBuffer = alternateBuffers.get('8') || null;
+    } else {
+      track.frontBuffer = null;
+      track.bellBuffer = null;
+    }
+
+    // If playing, reconnect with new buffers
     if (this.isPlaying) {
       const currentTime = this.getCurrentTime();
       this.disconnectTrack(id);

@@ -161,6 +161,18 @@
           </label>
         </div>
 
+        <div class="noise-gate-controls">
+          <label class="checkbox-label">
+            <input type="checkbox" id="noise-gate-checkbox">
+            Noise Gate
+          </label>
+          <div class="noise-gate-threshold" id="noise-gate-threshold-container">
+            <label for="noise-gate-threshold">Threshold:</label>
+            <input type="range" id="noise-gate-threshold" min="-60" max="-30" value="-48" step="1">
+            <span id="noise-gate-threshold-value">-48dB</span>
+          </div>
+        </div>
+
         <div class="action-buttons">
           <button id="reset-positions-btn" class="btn secondary">Reset Positions</button>
           <button id="reset-all-btn" class="btn secondary">Reset All</button>
@@ -216,6 +228,6 @@
     </footer>
   </div>
 
-  <script type="module" src="js/app.js?v=5"></script>
+  <script type="module" src="js/app.js?v=6"></script>
 </body>
 </html>
