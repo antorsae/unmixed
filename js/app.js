@@ -595,33 +595,17 @@ function createTracksFromPendingFiles() {
     const primary = files[0];
     const id = generateTrackId(primary.filename);
 
-    // Build alternate buffers map (store both original and processed)
+    // Build alternate buffers map (store originals only - noise gate applied later)
     const originalAlternateBuffers = new Map();
-    const alternateBuffers = new Map();
     for (const file of files) {
       const micPos = file.micPosition || '6';
       originalAlternateBuffers.set(micPos, file.audioBuffer);
-      // Apply noise gate if enabled
-      if (state.noiseGateEnabled) {
-        alternateBuffers.set(micPos, applyNoiseGate(file.audioBuffer, {
-          ...DEFAULT_NOISE_GATE_OPTIONS,
-          thresholdDb: state.noiseGateThreshold,
-        }));
-      } else {
-        alternateBuffers.set(micPos, file.audioBuffer);
-      }
     }
 
-    // Process primary buffer
+    // Store original buffer (noise gate applied later asynchronously)
     const originalBuffer = primary.audioBuffer;
-    const processedBuffer = state.noiseGateEnabled
-      ? applyNoiseGate(originalBuffer, {
-          ...DEFAULT_NOISE_GATE_OPTIONS,
-          thresholdDb: state.noiseGateThreshold,
-        })
-      : originalBuffer;
 
-    // Create track object
+    // Create track object with original (unprocessed) buffers
     const track = {
       id,
       filename: primary.filename,
@@ -635,11 +619,11 @@ function createTracksFromPendingFiles() {
       muted: false,
       solo: false,
       micPosition: primary.micPosition || '6',
-      audioBuffer: processedBuffer,
-      originalBuffer: originalBuffer, // Store original for re-processing
-      alternateBuffers: alternateBuffers.size > 1 ? alternateBuffers : null,
+      audioBuffer: originalBuffer, // Will be processed later if noise gate enabled
+      originalBuffer: originalBuffer,
+      alternateBuffers: originalAlternateBuffers.size > 1 ? new Map(originalAlternateBuffers) : null,
       originalAlternateBuffers: originalAlternateBuffers.size > 1 ? originalAlternateBuffers : null,
-      availableMics: alternateBuffers.size > 1 ? Array.from(alternateBuffers.keys()) : null,
+      availableMics: originalAlternateBuffers.size > 1 ? Array.from(originalAlternateBuffers.keys()) : null,
     };
 
     state.tracks.set(id, track);
@@ -793,6 +777,11 @@ function finalizeTracks() {
 
   // Apply reverb
   updateReverb();
+
+  // Apply noise gate asynchronously if enabled (to avoid blocking UI)
+  if (state.noiseGateEnabled) {
+    applyNoiseGateAsync();
+  }
 }
 
 /**
@@ -1187,10 +1176,71 @@ function handleNoiseGateThresholdChange(e) {
 }
 
 /**
+ * Yield to browser to prevent UI freeze
+ */
+function yieldToBrowser() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+/**
+ * Apply noise gate asynchronously (for initial load)
+ */
+async function applyNoiseGateAsync() {
+  setStatus('Applying noise gate...', 'info');
+
+  const trackIds = Array.from(state.tracks.keys());
+
+  for (let i = 0; i < trackIds.length; i++) {
+    const id = trackIds[i];
+    const track = state.tracks.get(id);
+    if (!track) continue;
+
+    // Process main buffer
+    const sourceBuffer = track.originalBuffer || track.audioBuffer;
+    const processedBuffer = applyNoiseGate(sourceBuffer, {
+      ...DEFAULT_NOISE_GATE_OPTIONS,
+      thresholdDb: state.noiseGateThreshold,
+    });
+    track.audioBuffer = processedBuffer;
+    audioEngine.updateTrackBuffer(id, track.audioBuffer);
+
+    // Process alternate buffers if present
+    if (track.originalAlternateBuffers) {
+      track.alternateBuffers = new Map();
+      for (const [micPos, origBuf] of track.originalAlternateBuffers) {
+        track.alternateBuffers.set(micPos, applyNoiseGate(origBuf, {
+          ...DEFAULT_NOISE_GATE_OPTIONS,
+          thresholdDb: state.noiseGateThreshold,
+        }));
+      }
+      audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+    }
+
+    // Yield to browser every few tracks to keep UI responsive
+    if (i % 3 === 0) {
+      await yieldToBrowser();
+    }
+  }
+
+  setStatus(`Loaded ${state.tracks.size} tracks (noise gate applied)`, 'success');
+}
+
+/**
  * Re-process all tracks with current noise gate settings
  */
-function reprocessTracksWithNoiseGate() {
-  for (const [id, track] of state.tracks) {
+async function reprocessTracksWithNoiseGate() {
+  setStatus(state.noiseGateEnabled ? 'Applying noise gate...' : 'Removing noise gate...', 'info');
+
+  // Yield first to let UI update
+  await yieldToBrowser();
+
+  const trackIds = Array.from(state.tracks.keys());
+
+  for (let i = 0; i < trackIds.length; i++) {
+    const id = trackIds[i];
+    const track = state.tracks.get(id);
+    if (!track) continue;
+
     // Use original buffer if available, otherwise the current buffer
     const sourceBuffer = track.originalBuffer || track.audioBuffer;
 
@@ -1225,8 +1275,14 @@ function reprocessTracksWithNoiseGate() {
       // Update directivity buffers in audio engine
       audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
     }
+
+    // Yield to browser every few tracks
+    if (i % 3 === 0) {
+      await yieldToBrowser();
+    }
   }
 
+  setStatus(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate removed', 'success');
   showToast(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate disabled', 'info');
 }
 
