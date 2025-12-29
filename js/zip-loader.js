@@ -1,10 +1,10 @@
 // ZIP file loading and extraction
 
-// Multiple CORS proxies to try in order
+// Multiple CORS proxies to try in order (codetabs first - most reliable)
 const CORS_PROXIES = [
+  (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
   (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
 
 /**

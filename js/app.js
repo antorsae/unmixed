@@ -4,7 +4,7 @@ import { PROFILES, FAMILY_ORDER, FAMILY_COLORS } from './positions.js';
 import { parseTrackFilename, applyInstanceSpreading, generateTrackId, sortTracksByFamily, getMicLabel } from './track-parser.js';
 import { AudioEngine } from './audio-engine.js';
 import { StageCanvas } from './stage-canvas.js?v=2';
-import { loadZipFromUrl, loadZipFromFile, extractAudioFiles, loadAudioFiles, mightNeedCorsProxy } from './zip-loader.js?v=2';
+import { loadZipFromUrl, loadZipFromFile, extractAudioFiles, loadAudioFiles, mightNeedCorsProxy } from './zip-loader.js?v=3';
 import { audioBufferToWav, createWavBlob, downloadBlob, generateFilename } from './wav-encoder.js';
 import { audioBufferToMp3, isLameJsAvailable } from './mp3-encoder.js';
 import { ReverbManager, REVERB_PRESETS } from './reverb.js';
@@ -333,27 +333,15 @@ async function loadProfile(profileKey, url, displayName) {
   setStatus('Downloading profile...', 'info');
 
   try {
-    // Try direct fetch first
+    // Use CORS proxy for external URLs
     let zip;
     const needsProxy = mightNeedCorsProxy(url);
 
-    try {
-      zip = await loadZipFromUrl(url, updateProgress, false);
-    } catch (error) {
-      if (needsProxy) {
-        // Try with CORS proxy
-        setStatus('Using CORS proxy...', 'info');
-        showToast('Direct download failed, trying CORS proxy...', 'warning');
-
-        try {
-          zip = await loadZipFromUrl(url, updateProgress, true);
-        } catch (proxyError) {
-          throw new Error('Failed to download. Please download the ZIP manually and upload it.');
-        }
-      } else {
-        throw error;
-      }
+    if (needsProxy) {
+      setStatus('Downloading via proxy...', 'info');
     }
+
+    zip = await loadZipFromUrl(url, updateProgress, needsProxy);
 
     // Extract audio files
     setStatus('Extracting audio files...', 'info');
