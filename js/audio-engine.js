@@ -115,16 +115,7 @@ export class AudioEngine {
   }
 
   /**
-   * Calculate distance between two points
-   */
-  calculateDistance(p1, p2) {
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    return Math.sqrt(dx * dx + dy * dy);
-  }
-
-  /**
-   * Calculate 3D distance including height for ground reflection
+   * Calculate 3D distance including height difference
    */
   calculateDistance3D(source, mic, sourceHeight, micHeight) {
     const dx = mic.x - source.x;
@@ -312,9 +303,9 @@ export class AudioEngine {
   updateTrackAudioParams(id, track, nodes) {
     const sourcePos = this.normalizedToMeters(track.x, track.y);
 
-    // Calculate distances to each mic
-    const distL = this.calculateDistance(sourcePos, this.micL);
-    const distR = this.calculateDistance(sourcePos, this.micR);
+    // Calculate 3D distances to each mic (includes height difference)
+    const distL = this.calculateDistance3D(sourcePos, this.micL, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight);
+    const distR = this.calculateDistance3D(sourcePos, this.micR, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight);
 
     // Minimum distance to avoid division by zero and extreme values
     const minDist = 0.5;
@@ -356,14 +347,25 @@ export class AudioEngine {
       nodes.frontGainR.gain.setTargetAtTime(ampR * gainMultiplier, now, rampTime);
     }
 
-    // ITD - delay based on distance difference
-    // We delay the further channel relative to the closer one
+    // Calculate propagation delays
     const timeL = effectiveDistL / SPEED_OF_SOUND;
     const timeR = effectiveDistR / SPEED_OF_SOUND;
-    const minTime = Math.min(timeL, timeR);
 
-    nodes.delayL.delayTime.setTargetAtTime(timeL - minTime, now, rampTime);
-    nodes.delayR.delayTime.setTargetAtTime(timeR - minTime, now, rampTime);
+    // Base delay: average propagation time preserves depth timing cues
+    // Instruments further back arrive later than those in front
+    // Reference: front of stage (y=0) to mic midpoint
+    const refDistance = Math.abs(STAGE_CONFIG.micY); // ~1m from front of stage to mics
+    const refTime = refDistance / SPEED_OF_SOUND;
+    const avgTime = (timeL + timeR) / 2;
+    const baseDelay = Math.max(0, avgTime - refTime); // Delay relative to front of stage
+
+    // ITD: additional delay for the further channel (L/R difference)
+    const minTime = Math.min(timeL, timeR);
+    const itdL = timeL - minTime;
+    const itdR = timeR - minTime;
+
+    nodes.delayL.delayTime.setTargetAtTime(baseDelay + itdL, now, rampTime);
+    nodes.delayR.delayTime.setTargetAtTime(baseDelay + itdR, now, rampTime);
 
     // Air absorption - update filter banks (ISO 9613-1 frequency-dependent)
     this.updateAirAbsorptionFilters(nodes.airAbsorbL, effectiveDistL, now, rampTime);
@@ -386,9 +388,9 @@ export class AudioEngine {
         nodes.groundDelayL.delayTime.setTargetAtTime(groundTimeL - timeL, now, rampTime);
         nodes.groundDelayR.delayTime.setTargetAtTime(groundTimeR - timeR, now, rampTime);
 
-        // Ground reflection amplitude (1/d with reflection coefficient)
-        const groundAmpL = (refDist / groundDistL) * STAGE_CONFIG.groundReflectionCoeff;
-        const groundAmpR = (refDist / groundDistR) * STAGE_CONFIG.groundReflectionCoeff;
+        // Ground reflection amplitude (1/d with reflection coefficient, clamped to prevent clipping)
+        const groundAmpL = Math.min(1.0, refDist / groundDistL) * STAGE_CONFIG.groundReflectionCoeff;
+        const groundAmpR = Math.min(1.0, refDist / groundDistR) * STAGE_CONFIG.groundReflectionCoeff;
 
         nodes.groundGainL.gain.setTargetAtTime(groundAmpL * gainMultiplier, now, rampTime);
         nodes.groundGainR.gain.setTargetAtTime(groundAmpR * gainMultiplier, now, rampTime);
@@ -957,8 +959,9 @@ export class AudioEngine {
       if (hasSolo && !track.solo) continue;
 
       const sourcePos = this.normalizedToMeters(track.x, track.y);
-      const distL = Math.max(0.5, this.calculateDistance(sourcePos, this.micL));
-      const distR = Math.max(0.5, this.calculateDistance(sourcePos, this.micR));
+      // Use 3D distances for consistency with ground reflection geometry
+      const distL = Math.max(0.5, this.calculateDistance3D(sourcePos, this.micL, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight));
+      const distR = Math.max(0.5, this.calculateDistance3D(sourcePos, this.micR, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight));
 
       const refDist = 3;
       // Limit gain to prevent clipping (cap at 1.0 for close sources)
@@ -967,7 +970,17 @@ export class AudioEngine {
 
       const timeL = distL / SPEED_OF_SOUND;
       const timeR = distR / SPEED_OF_SOUND;
+
+      // Base delay: preserves depth timing cues (relative to front of stage)
+      const refDistance = Math.abs(STAGE_CONFIG.micY);
+      const refTime = refDistance / SPEED_OF_SOUND;
+      const avgTime = (timeL + timeR) / 2;
+      const baseDelay = Math.max(0, avgTime - refTime);
+
+      // ITD: L/R difference
       const minTime = Math.min(timeL, timeR);
+      const itdL = timeL - minTime;
+      const itdR = timeR - minTime;
 
       // Check for directivity blending
       const hasDirectivity = track.frontBuffer && track.bellBuffer;
@@ -1021,7 +1034,7 @@ export class AudioEngine {
 
       // Left channel processing with frequency-dependent air absorption
       const delayL = offlineContext.createDelay(0.1);
-      delayL.delayTime.value = timeL - minTime;
+      delayL.delayTime.value = baseDelay + itdL;
       const absorbL = this.createAirAbsorptionFilterBank(offlineContext);
       const absorptionL = this.calculateAirAbsorption(distL);
       absorbL.forEach((filter, i) => { filter.gain.value = absorptionL[i].gainDb; });
@@ -1035,7 +1048,7 @@ export class AudioEngine {
 
       // Right channel processing with frequency-dependent air absorption
       const delayR = offlineContext.createDelay(0.1);
-      delayR.delayTime.value = timeR - minTime;
+      delayR.delayTime.value = baseDelay + itdR;
       const absorbR = this.createAirAbsorptionFilterBank(offlineContext);
       const absorptionR = this.calculateAirAbsorption(distR);
       absorbR.forEach((filter, i) => { filter.gain.value = absorptionR[i].gainDb; });

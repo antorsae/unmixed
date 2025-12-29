@@ -225,24 +225,6 @@ export function lookupDefaultPosition(name) {
 }
 
 /**
- * Calculate spread positions for multiple instances of same instrument
- * @param {number} baseX - Base X position
- * @param {number} instanceIndex - 0-based index of this instance
- * @param {number} totalCount - Total number of instances
- * @param {number} spread - Spread factor (default 0.08)
- * @returns {number} - Adjusted X position
- */
-export function calculateSpreadX(baseX, instanceIndex, totalCount, spread = 0.08) {
-  if (totalCount <= 1) return baseX;
-
-  const offset = (instanceIndex - (totalCount - 1) / 2) * spread;
-  const result = baseX + offset;
-
-  // Clamp to valid range
-  return Math.max(-1, Math.min(1, result));
-}
-
-/**
  * Get profile metadata
  */
 export const PROFILES = {

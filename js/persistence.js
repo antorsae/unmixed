@@ -136,7 +136,7 @@ export function createSessionState(appState) {
     reverbMode: appState.reverbMode,
     // Additional settings
     micSeparation: appState.micSeparation,
-    groundReflection: appState.groundReflection,
+    groundReflectionEnabled: appState.groundReflectionEnabled,
     noiseGateEnabled: appState.noiseGateEnabled,
     noiseGateThreshold: appState.noiseGateThreshold,
   };

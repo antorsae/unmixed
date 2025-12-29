@@ -1,6 +1,6 @@
 // Track filename parsing and instrument detection
 
-import { detectFamily, lookupDefaultPosition, calculateSpreadX } from './positions.js';
+import { detectFamily, lookupDefaultPosition } from './positions.js';
 
 /**
  * Parse an instrument name from a filename
@@ -66,86 +66,6 @@ export function parseTrackFilename(filename) {
     defaultX: basePosition.x,
     defaultY: basePosition.y,
   };
-}
-
-/**
- * Group tracks by base instrument name for spreading
- * @param {Array} parsedTracks - Array of parsed track info objects
- * @returns {Array} - Tracks with adjusted positions for spreading
- */
-export function applyInstanceSpreading(parsedTracks) {
-  // Group by base name
-  const groups = new Map();
-
-  for (const track of parsedTracks) {
-    const key = track.baseName;
-    if (!groups.has(key)) {
-      groups.set(key, []);
-    }
-    groups.get(key).push(track);
-  }
-
-  // Apply spreading within each group
-  const result = [];
-
-  for (const [, groupTracks] of groups) {
-    // Sort by instance number
-    groupTracks.sort((a, b) => {
-      const aNum = a.instanceNumber || 0;
-      const bNum = b.instanceNumber || 0;
-      return aNum - bNum;
-    });
-
-    const count = groupTracks.length;
-
-    for (let i = 0; i < groupTracks.length; i++) {
-      const track = groupTracks[i];
-      const adjustedX = calculateSpreadX(track.defaultX, i, count);
-
-      result.push({
-        ...track,
-        defaultX: adjustedX,
-      });
-    }
-  }
-
-  return result;
-}
-
-/**
- * Group tracks by mic position for the same instrument
- * @param {Array} parsedTracks - Array of parsed track info
- * @returns {Map} - Map of base key to array of mic variants
- */
-export function groupByMicPosition(parsedTracks) {
-  const groups = new Map();
-
-  for (const track of parsedTracks) {
-    // Create key without mic position
-    const key = `${track.baseName}_${track.instanceNumber || ''}`;
-
-    if (!groups.has(key)) {
-      groups.set(key, []);
-    }
-    groups.get(key).push(track);
-  }
-
-  return groups;
-}
-
-/**
- * Get a display label for a mic position
- * @param {string} micPos - Mic position number as string
- * @returns {string} - Display label
- */
-export function getMicLabel(micPos) {
-  const labels = {
-    '5': 'Top (mic 5)',
-    '6': 'Front (mic 6)',
-    '8': 'Bell/Rear (mic 8)',
-  };
-
-  return labels[micPos] || `Mic ${micPos}`;
 }
 
 /**

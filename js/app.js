@@ -1586,20 +1586,20 @@ async function restoreSession() {
   state.reverbPreset = session.reverbPreset ?? 'concert-hall';
   state.reverbMode = session.reverbMode ?? 'depth';
   state.micSeparation = session.micSeparation ?? 2;
-  state.groundReflection = session.groundReflection ?? false;
+  state.groundReflectionEnabled = session.groundReflectionEnabled ?? false;
   state.noiseGateEnabled = session.noiseGateEnabled ?? false;
   state.noiseGateThreshold = session.noiseGateThreshold ?? -48;
 
   audioEngine.setMasterGain(state.masterGain);
   audioEngine.setMicSeparation(state.micSeparation);
-  audioEngine.setGroundReflection(state.groundReflection);
+  audioEngine.setGroundReflection(state.groundReflectionEnabled);
   updateReverb();
   updateTransportUI();
 
   // Update UI controls for additional settings
   elements.micSeparation.value = state.micSeparation;
   elements.micSeparationValue.textContent = `${state.micSeparation.toFixed(1)}m`;
-  elements.groundReflectionCheckbox.checked = state.groundReflection;
+  elements.groundReflectionCheckbox.checked = state.groundReflectionEnabled;
   elements.noiseGateCheckbox.checked = state.noiseGateEnabled;
   elements.noiseGateThreshold.value = state.noiseGateThreshold;
   elements.noiseGateThresholdValue.textContent = `${state.noiseGateThreshold}dB`;
@@ -1644,7 +1644,7 @@ function saveCurrentSession() {
     reverbPreset: state.reverbPreset,
     reverbMode: state.reverbMode,
     micSeparation: state.micSeparation,
-    groundReflection: state.groundReflection,
+    groundReflectionEnabled: state.groundReflectionEnabled,
     noiseGateEnabled: state.noiseGateEnabled,
     noiseGateThreshold: state.noiseGateThreshold,
   });
