@@ -9,7 +9,7 @@ import { audioBufferToWav, createWavBlob, downloadBlob, generateFilename } from 
 import { audioBufferToMp3, isLameJsAvailable } from './mp3-encoder.js';
 import { ReverbManager, REVERB_PRESETS } from './reverb.js';
 import { saveSession, loadSession, clearSession, hasSession, createSessionState, applySessionToTracks, setupUnloadWarning, debounce } from './persistence.js';
-import { applyNoiseGate, copyAudioBuffer, DEFAULT_NOISE_GATE_OPTIONS } from './noise-gate.js';
+import { copyAudioBuffer, DEFAULT_NOISE_GATE_OPTIONS } from './noise-gate.js';
 
 // Application state
 const state = {
@@ -31,6 +31,11 @@ const state = {
 let audioEngine = null;
 let stageCanvas = null;
 let reverbManager = null;
+
+// Noise gate worker
+let noiseGateWorker = null;
+let noiseGateTaskId = 0;
+const noiseGatePendingTasks = new Map();
 
 // Render state
 let renderAbortController = null;
@@ -54,6 +59,9 @@ async function init() {
 
   // Initialize reverb manager
   reverbManager = new ReverbManager(audioEngine.context);
+
+  // Initialize noise gate worker
+  initNoiseGateWorker();
 
   // Initialize stage canvas
   stageCanvas = new StageCanvas(elements.stageCanvas);
@@ -778,9 +786,9 @@ function finalizeTracks() {
   // Apply reverb
   updateReverb();
 
-  // Apply noise gate asynchronously if enabled (to avoid blocking UI)
+  // Apply noise gate asynchronously if enabled (runs in Web Worker)
   if (state.noiseGateEnabled) {
-    applyNoiseGateAsync();
+    applyNoiseGateToAllTracks();
   }
 }
 
@@ -1176,17 +1184,87 @@ function handleNoiseGateThresholdChange(e) {
 }
 
 /**
- * Yield to browser to prevent UI freeze
+ * Initialize the noise gate Web Worker
  */
-function yieldToBrowser() {
-  return new Promise(resolve => setTimeout(resolve, 0));
+function initNoiseGateWorker() {
+  noiseGateWorker = new Worker('js/noise-gate-worker.js');
+
+  noiseGateWorker.onmessage = (e) => {
+    const { outputData, taskId } = e.data;
+    const pending = noiseGatePendingTasks.get(taskId);
+
+    if (pending) {
+      noiseGatePendingTasks.delete(taskId);
+
+      // Convert Float32Arrays back to AudioBuffer
+      const { sampleRate, resolve } = pending;
+      const numChannels = outputData.length;
+      const length = outputData[0].length;
+
+      const ctx = new OfflineAudioContext(numChannels, length, sampleRate);
+      const outputBuffer = ctx.createBuffer(numChannels, length, sampleRate);
+
+      for (let ch = 0; ch < numChannels; ch++) {
+        outputBuffer.getChannelData(ch).set(outputData[ch]);
+      }
+
+      resolve(outputBuffer);
+    }
+  };
 }
 
 /**
- * Apply noise gate asynchronously (for initial load)
+ * Apply noise gate to an AudioBuffer using the Web Worker
+ * @param {AudioBuffer} audioBuffer - Input buffer
+ * @param {Object} options - Noise gate options
+ * @returns {Promise<AudioBuffer>} - Processed buffer
  */
-async function applyNoiseGateAsync() {
+function applyNoiseGateAsync(audioBuffer, options = {}) {
+  return new Promise((resolve) => {
+    const taskId = ++noiseGateTaskId;
+    const numChannels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+
+    // Extract channel data as Float32Arrays
+    const channelData = [];
+    for (let ch = 0; ch < numChannels; ch++) {
+      // Copy the data (worker will take ownership)
+      channelData.push(new Float32Array(audioBuffer.getChannelData(ch)));
+    }
+
+    // Store pending task
+    noiseGatePendingTasks.set(taskId, { sampleRate, resolve });
+
+    // Send to worker (transfer buffers for efficiency)
+    const transferList = channelData.map(arr => arr.buffer);
+    noiseGateWorker.postMessage({
+      channelData,
+      sampleRate,
+      options: {
+        ...DEFAULT_NOISE_GATE_OPTIONS,
+        ...options,
+      },
+      taskId,
+    }, transferList);
+  });
+}
+
+/**
+ * Yield to browser to allow paint and prevent UI freeze
+ * Uses requestAnimationFrame + setTimeout to ensure paint happens
+ */
+function yieldToBrowser() {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
+/**
+ * Apply noise gate to all tracks (for initial load)
+ */
+async function applyNoiseGateToAllTracks() {
   setStatus('Applying noise gate...', 'info');
+  await yieldToBrowser();
 
   const trackIds = Array.from(state.tracks.keys());
 
@@ -1195,10 +1273,11 @@ async function applyNoiseGateAsync() {
     const track = state.tracks.get(id);
     if (!track) continue;
 
-    // Process main buffer
+    setStatus(`Applying noise gate... (${i + 1}/${trackIds.length})`, 'info');
+
+    // Process main buffer using worker
     const sourceBuffer = track.originalBuffer || track.audioBuffer;
-    const processedBuffer = applyNoiseGate(sourceBuffer, {
-      ...DEFAULT_NOISE_GATE_OPTIONS,
+    const processedBuffer = await applyNoiseGateAsync(sourceBuffer, {
       thresholdDb: state.noiseGateThreshold,
     });
     track.audioBuffer = processedBuffer;
@@ -1208,17 +1287,12 @@ async function applyNoiseGateAsync() {
     if (track.originalAlternateBuffers) {
       track.alternateBuffers = new Map();
       for (const [micPos, origBuf] of track.originalAlternateBuffers) {
-        track.alternateBuffers.set(micPos, applyNoiseGate(origBuf, {
-          ...DEFAULT_NOISE_GATE_OPTIONS,
+        const processed = await applyNoiseGateAsync(origBuf, {
           thresholdDb: state.noiseGateThreshold,
-        }));
+        });
+        track.alternateBuffers.set(micPos, processed);
       }
       audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
-    }
-
-    // Yield to browser every few tracks to keep UI responsive
-    if (i % 3 === 0) {
-      await yieldToBrowser();
     }
   }
 
@@ -1229,9 +1303,8 @@ async function applyNoiseGateAsync() {
  * Re-process all tracks with current noise gate settings
  */
 async function reprocessTracksWithNoiseGate() {
-  setStatus(state.noiseGateEnabled ? 'Applying noise gate...' : 'Removing noise gate...', 'info');
-
-  // Yield first to let UI update
+  const action = state.noiseGateEnabled ? 'Applying' : 'Removing';
+  setStatus(`${action} noise gate...`, 'info');
   await yieldToBrowser();
 
   const trackIds = Array.from(state.tracks.keys());
@@ -1241,13 +1314,14 @@ async function reprocessTracksWithNoiseGate() {
     const track = state.tracks.get(id);
     if (!track) continue;
 
+    setStatus(`${action} noise gate... (${i + 1}/${trackIds.length})`, 'info');
+
     // Use original buffer if available, otherwise the current buffer
     const sourceBuffer = track.originalBuffer || track.audioBuffer;
 
     if (state.noiseGateEnabled) {
-      // Apply noise gate
-      const processedBuffer = applyNoiseGate(sourceBuffer, {
-        ...DEFAULT_NOISE_GATE_OPTIONS,
+      // Apply noise gate using worker
+      const processedBuffer = await applyNoiseGateAsync(sourceBuffer, {
         thresholdDb: state.noiseGateThreshold,
       });
       track.audioBuffer = processedBuffer;
@@ -1264,21 +1338,16 @@ async function reprocessTracksWithNoiseGate() {
       track.alternateBuffers = new Map();
       for (const [micPos, origBuf] of track.originalAlternateBuffers) {
         if (state.noiseGateEnabled) {
-          track.alternateBuffers.set(micPos, applyNoiseGate(origBuf, {
-            ...DEFAULT_NOISE_GATE_OPTIONS,
+          const processed = await applyNoiseGateAsync(origBuf, {
             thresholdDb: state.noiseGateThreshold,
-          }));
+          });
+          track.alternateBuffers.set(micPos, processed);
         } else {
           track.alternateBuffers.set(micPos, copyAudioBuffer(origBuf));
         }
       }
       // Update directivity buffers in audio engine
       audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
-    }
-
-    // Yield to browser every few tracks
-    if (i % 3 === 0) {
-      await yieldToBrowser();
     }
   }
 
