@@ -7,7 +7,7 @@ import { StageCanvas } from './stage-canvas.js?v=3';
 import { loadZipFromUrl, loadZipFromFile, extractAudioFiles, loadAudioFiles, mightNeedCorsProxy } from './zip-loader.js?v=3';
 import { audioBufferToWav, createWavBlob, downloadBlob, generateFilename } from './wav-encoder.js';
 import { audioBufferToMp3, isLameJsAvailable } from './mp3-encoder.js';
-import { ReverbManager, REVERB_PRESETS } from './reverb.js';
+import { ReverbManager } from './reverb.js';
 import { saveSession, loadSession, clearSession, hasSession, createSessionState, applySessionToTracks, setupUnloadWarning, debounce } from './persistence.js';
 import { copyAudioBuffer, DEFAULT_NOISE_GATE_OPTIONS } from './noise-gate.js';
 
@@ -36,6 +36,7 @@ let reverbManager = null;
 let noiseGateWorker = null;
 let noiseGateTaskId = 0;
 const noiseGatePendingTasks = new Map();
+let noiseGateGeneration = 0; // For serializing async reprocessing
 
 // Render state
 let renderAbortController = null;
@@ -863,8 +864,11 @@ function createTrackListItem(track) {
   el.className = 'track-item';
   el.dataset.trackId = track.id;
 
-  // Show directivity indicator if multiple mics available
-  const hasDirectivity = track.availableMics && track.availableMics.length > 1;
+  // Show directivity indicator only if both mic 6 (front) AND mic 8 (bell) are available
+  // Blending only occurs with this specific combination
+  const hasDirectivity = track.availableMics &&
+    track.availableMics.includes('6') &&
+    track.availableMics.includes('8');
 
   el.innerHTML = `
     <input type="checkbox" class="track-mute" ${track.muted ? '' : 'checked'} title="Enable/Disable">
@@ -1308,15 +1312,25 @@ async function applyNoiseGateToAllTracks() {
 
 /**
  * Re-process all tracks with current noise gate settings
+ * Uses generation counter to prevent stale async results from being committed
  */
 async function reprocessTracksWithNoiseGate() {
+  // Increment generation to invalidate any in-flight processing
+  const thisGeneration = ++noiseGateGeneration;
+
   const action = state.noiseGateEnabled ? 'Applying' : 'Removing';
   setStatus(`${action} noise gate...`, 'info');
   await yieldToBrowser();
 
+  // Check if a newer request has come in
+  if (thisGeneration !== noiseGateGeneration) return;
+
   const trackIds = Array.from(state.tracks.keys());
 
   for (let i = 0; i < trackIds.length; i++) {
+    // Check if a newer request has come in
+    if (thisGeneration !== noiseGateGeneration) return;
+
     const id = trackIds[i];
     const track = state.tracks.get(id);
     if (!track) continue;
@@ -1331,6 +1345,8 @@ async function reprocessTracksWithNoiseGate() {
       const processedBuffer = await applyNoiseGateAsync(sourceBuffer, {
         thresholdDb: state.noiseGateThreshold,
       });
+      // Check again after async operation
+      if (thisGeneration !== noiseGateGeneration) return;
       track.audioBuffer = processedBuffer;
     } else {
       // Restore original
@@ -1348,6 +1364,8 @@ async function reprocessTracksWithNoiseGate() {
           const processed = await applyNoiseGateAsync(origBuf, {
             thresholdDb: state.noiseGateThreshold,
           });
+          // Check again after async operation
+          if (thisGeneration !== noiseGateGeneration) return;
           track.alternateBuffers.set(micPos, processed);
         } else {
           track.alternateBuffers.set(micPos, copyAudioBuffer(origBuf));
@@ -1358,8 +1376,11 @@ async function reprocessTracksWithNoiseGate() {
     }
   }
 
-  setStatus(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate removed', 'success');
-  showToast(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate disabled', 'info');
+  // Only show completion message if this was the most recent request
+  if (thisGeneration === noiseGateGeneration) {
+    setStatus(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate removed', 'success');
+    showToast(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate disabled', 'info');
+  }
 }
 
 /**
@@ -1564,10 +1585,25 @@ async function restoreSession() {
   state.masterGain = session.masterGain ?? 0.8;
   state.reverbPreset = session.reverbPreset ?? 'concert-hall';
   state.reverbMode = session.reverbMode ?? 'depth';
+  state.micSeparation = session.micSeparation ?? 2;
+  state.groundReflection = session.groundReflection ?? false;
+  state.noiseGateEnabled = session.noiseGateEnabled ?? false;
+  state.noiseGateThreshold = session.noiseGateThreshold ?? -48;
 
   audioEngine.setMasterGain(state.masterGain);
+  audioEngine.setMicSeparation(state.micSeparation);
+  audioEngine.setGroundReflection(state.groundReflection);
   updateReverb();
   updateTransportUI();
+
+  // Update UI controls for additional settings
+  elements.micSeparation.value = state.micSeparation;
+  elements.micSeparationValue.textContent = `${state.micSeparation.toFixed(1)}m`;
+  elements.groundReflectionCheckbox.checked = state.groundReflection;
+  elements.noiseGateCheckbox.checked = state.noiseGateEnabled;
+  elements.noiseGateThreshold.value = state.noiseGateThreshold;
+  elements.noiseGateThresholdValue.textContent = `${state.noiseGateThreshold}dB`;
+  elements.noiseGateThresholdContainer.classList.toggle('enabled', state.noiseGateEnabled);
 
   // If there was a profile, prompt to reload
   if (session.profile && PROFILES[session.profile]) {
@@ -1607,6 +1643,10 @@ function saveCurrentSession() {
     masterGain: state.masterGain,
     reverbPreset: state.reverbPreset,
     reverbMode: state.reverbMode,
+    micSeparation: state.micSeparation,
+    groundReflection: state.groundReflection,
+    noiseGateEnabled: state.noiseGateEnabled,
+    noiseGateThreshold: state.noiseGateThreshold,
   });
 
   saveSession(sessionState);

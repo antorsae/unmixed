@@ -4,18 +4,6 @@
 // Physical constants
 const SPEED_OF_SOUND = 343; // m/s at 20°C
 
-// Air absorption coefficients in dB per 100 meters at different frequencies
-// Based on ISO 9613-1 at 20°C, 50% humidity
-const AIR_ABSORPTION = {
-  250: 0.1,
-  500: 0.3,
-  1000: 0.6,
-  2000: 1.3,
-  4000: 2.8,
-  8000: 7.0,
-  16000: 22.0,
-};
-
 // Stage dimensions (meters)
 const STAGE_CONFIG = {
   width: 20,        // -10m to +10m
@@ -337,23 +325,22 @@ export class AudioEngine {
     const blendL = this.calculateDirectivityBlend(sourcePos, this.micL);
     const blendR = this.calculateDirectivityBlend(sourcePos, this.micR);
 
+    // Use setTargetAtTime for smooth transitions to avoid zipper noise during dragging
+    const now = this.context.currentTime;
+    const rampTime = 0.02; // 20ms ramp for smooth transitions
+
     if (nodes.hasDirectivity) {
       // Apply directivity: front and bell sources are blended per channel
       // Front gain includes amplitude + directivity front weight
-      nodes.frontGainL.gain.value = ampL * gainMultiplier * blendL.front;
-      nodes.frontGainR.gain.value = ampR * gainMultiplier * blendR.front;
+      nodes.frontGainL.gain.setTargetAtTime(ampL * gainMultiplier * blendL.front, now, rampTime);
+      nodes.frontGainR.gain.setTargetAtTime(ampR * gainMultiplier * blendR.front, now, rampTime);
       // Bell gain includes amplitude + directivity bell weight
-      nodes.bellGainL.gain.value = ampL * gainMultiplier * blendL.bell;
-      nodes.bellGainR.gain.value = ampR * gainMultiplier * blendR.bell;
-      // Mixers pass through at unity (blending already done)
-      nodes.mixerL.gain.value = 1;
-      nodes.mixerR.gain.value = 1;
+      nodes.bellGainL.gain.setTargetAtTime(ampL * gainMultiplier * blendL.bell, now, rampTime);
+      nodes.bellGainR.gain.setTargetAtTime(ampR * gainMultiplier * blendR.bell, now, rampTime);
     } else {
       // No directivity: front source only, apply amplitude directly
-      nodes.frontGainL.gain.value = ampL * gainMultiplier;
-      nodes.frontGainR.gain.value = ampR * gainMultiplier;
-      nodes.mixerL.gain.value = 1;
-      nodes.mixerR.gain.value = 1;
+      nodes.frontGainL.gain.setTargetAtTime(ampL * gainMultiplier, now, rampTime);
+      nodes.frontGainR.gain.setTargetAtTime(ampR * gainMultiplier, now, rampTime);
     }
 
     // ITD - delay based on distance difference
@@ -362,15 +349,15 @@ export class AudioEngine {
     const timeR = effectiveDistR / SPEED_OF_SOUND;
     const minTime = Math.min(timeL, timeR);
 
-    nodes.delayL.delayTime.value = timeL - minTime;
-    nodes.delayR.delayTime.value = timeR - minTime;
+    nodes.delayL.delayTime.setTargetAtTime(timeL - minTime, now, rampTime);
+    nodes.delayR.delayTime.setTargetAtTime(timeR - minTime, now, rampTime);
 
     // Air absorption - update high shelf filters
     const absorbL = this.calculateAirAbsorptionDb(effectiveDistL);
     const absorbR = this.calculateAirAbsorptionDb(effectiveDistR);
 
-    nodes.airAbsorbL.gain.value = -absorbL;
-    nodes.airAbsorbR.gain.value = -absorbR;
+    nodes.airAbsorbL.gain.setTargetAtTime(-absorbL, now, rampTime);
+    nodes.airAbsorbR.gain.setTargetAtTime(-absorbR, now, rampTime);
 
     // Ground reflection (if enabled and nodes exist)
     if (nodes.groundDelayL && nodes.groundGainL) {
@@ -386,26 +373,26 @@ export class AudioEngine {
         const groundTimeR = groundDistR / SPEED_OF_SOUND;
 
         // Delay relative to direct sound
-        nodes.groundDelayL.delayTime.value = groundTimeL - timeL;
-        nodes.groundDelayR.delayTime.value = groundTimeR - timeR;
+        nodes.groundDelayL.delayTime.setTargetAtTime(groundTimeL - timeL, now, rampTime);
+        nodes.groundDelayR.delayTime.setTargetAtTime(groundTimeR - timeR, now, rampTime);
 
         // Ground reflection amplitude (1/d with reflection coefficient)
         const groundAmpL = (refDist / groundDistL) * STAGE_CONFIG.groundReflectionCoeff;
         const groundAmpR = (refDist / groundDistR) * STAGE_CONFIG.groundReflectionCoeff;
 
-        nodes.groundGainL.gain.value = groundAmpL * gainMultiplier;
-        nodes.groundGainR.gain.value = groundAmpR * gainMultiplier;
+        nodes.groundGainL.gain.setTargetAtTime(groundAmpL * gainMultiplier, now, rampTime);
+        nodes.groundGainR.gain.setTargetAtTime(groundAmpR * gainMultiplier, now, rampTime);
       } else {
-        nodes.groundGainL.gain.value = 0;
-        nodes.groundGainR.gain.value = 0;
+        nodes.groundGainL.gain.setTargetAtTime(0, now, rampTime);
+        nodes.groundGainR.gain.setTargetAtTime(0, now, rampTime);
       }
     }
 
     // Reverb send based on mode (stereo - L and R have same level)
     if (nodes.reverbSendL && nodes.reverbSendR) {
       const reverbLevel = this.calculateReverbSend(track.y);
-      nodes.reverbSendL.gain.value = reverbLevel;
-      nodes.reverbSendR.gain.value = reverbLevel;
+      nodes.reverbSendL.gain.setTargetAtTime(reverbLevel, now, rampTime);
+      nodes.reverbSendR.gain.setTargetAtTime(reverbLevel, now, rampTime);
     }
   }
 
@@ -578,6 +565,11 @@ export class AudioEngine {
     if (!track) return;
 
     const hasDirectivity = track.frontBuffer && track.bellBuffer;
+
+    // Clamp offset to buffer duration to prevent WebAudio errors
+    const bufferToUse = hasDirectivity ? track.frontBuffer : track.buffer;
+    const maxOffset = bufferToUse ? bufferToUse.duration : 0;
+    offset = Math.min(Math.max(0, offset), maxOffset);
 
     // === SOURCE NODES ===
     // Front source (or single source if no directivity)
@@ -880,7 +872,8 @@ export class AudioEngine {
    * Render the mix offline for export
    */
   async renderOffline(onProgress, signal) {
-    const sampleRate = 48000;
+    // Use context's sample rate to match playback and avoid resampling
+    const sampleRate = this.context ? this.context.sampleRate : 44100;
     const length = Math.ceil(this.duration * sampleRate);
     const offlineContext = new OfflineAudioContext(2, length, sampleRate);
 

@@ -134,6 +134,11 @@ export function createSessionState(appState) {
     masterGain: appState.masterGain,
     reverbPreset: appState.reverbPreset,
     reverbMode: appState.reverbMode,
+    // Additional settings
+    micSeparation: appState.micSeparation,
+    groundReflection: appState.groundReflection,
+    noiseGateEnabled: appState.noiseGateEnabled,
+    noiseGateThreshold: appState.noiseGateThreshold,
   };
 }
 
