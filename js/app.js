@@ -3,7 +3,7 @@
 import { PROFILES, FAMILY_ORDER, FAMILY_COLORS } from './positions.js';
 import { parseTrackFilename, applyInstanceSpreading, generateTrackId, sortTracksByFamily, getMicLabel } from './track-parser.js';
 import { AudioEngine } from './audio-engine.js';
-import { StageCanvas } from './stage-canvas.js?v=2';
+import { StageCanvas } from './stage-canvas.js?v=3';
 import { loadZipFromUrl, loadZipFromFile, extractAudioFiles, loadAudioFiles, mightNeedCorsProxy } from './zip-loader.js?v=3';
 import { audioBufferToWav, createWavBlob, downloadBlob, generateFilename } from './wav-encoder.js';
 import { audioBufferToMp3, isLameJsAvailable } from './mp3-encoder.js';
@@ -264,6 +264,18 @@ function setupStageCallbacks() {
       markUnsaved();
     }
   };
+
+  // Mic separation drag on canvas
+  stageCanvas.onMicSeparationChange = (separation) => {
+    state.micSeparation = separation;
+    elements.micSeparation.value = separation;
+    elements.micSeparationValue.textContent = `${separation.toFixed(1)}m`;
+    audioEngine.setMicSeparation(separation);
+    markUnsaved();
+  };
+
+  // Initialize canvas mic separation from state
+  stageCanvas.setMicSeparation(state.micSeparation);
 }
 
 /**
@@ -1099,6 +1111,7 @@ function handleMicSeparationChange(e) {
   state.micSeparation = separation;
   elements.micSeparationValue.textContent = `${separation.toFixed(1)}m`;
   audioEngine.setMicSeparation(separation);
+  stageCanvas.setMicSeparation(separation);
   markUnsaved();
 }
 

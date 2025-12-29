@@ -20,7 +20,14 @@ export class StageCanvas {
     this.resizeStartY = 0;
 
     this.hoveredTrackId = null;
-    this.hoveredZone = null; // 'center', 'edge', 'mute', 'solo'
+    this.hoveredZone = null; // 'center', 'edge', 'mute', 'solo', 'mic-left', 'mic-right'
+
+    // Microphone state
+    this.micSeparation = 2.0; // meters (0.5 to 6)
+    this.isDraggingMic = false;
+    this.draggingMicSide = null; // 'left' or 'right'
+    this.micDragStartX = 0;
+    this.micDragStartSeparation = 2.0;
 
     // Callbacks
     this.onTrackMove = null;
@@ -30,6 +37,7 @@ export class StageCanvas {
     this.onTrackGainChange = null;
     this.onTrackMuteToggle = null;
     this.onTrackSoloToggle = null;
+    this.onMicSeparationChange = null;
 
     // Constants
     this.baseRadius = 18;
@@ -37,6 +45,7 @@ export class StageCanvas {
     this.maxRadius = 35;
     this.padding = 40;
     this.iconSize = 16;
+    this.micIconSize = 24;
 
     // Setup
     this.setupEventListeners();
@@ -102,6 +111,51 @@ export class StageCanvas {
     y = Math.max(0, Math.min(1, y));
 
     return { x, y };
+  }
+
+  /**
+   * Get microphone positions on canvas
+   * Returns { left: {x, y}, right: {x, y} }
+   */
+  getMicPositions() {
+    const centerX = this.width / 2;
+    const micY = this.height - this.padding + 20; // Below the stage
+
+    // Convert separation (meters) to pixels
+    // Map 0.5-6m to roughly 20-200px spread from center
+    const maxSpread = Math.min(this.width / 2 - this.padding - 30, 200);
+    const minSpread = 20;
+    const normalizedSep = (this.micSeparation - 0.5) / 5.5; // 0 to 1
+    const spread = minSpread + normalizedSep * (maxSpread - minSpread);
+
+    return {
+      left: { x: centerX - spread, y: micY },
+      right: { x: centerX + spread, y: micY },
+    };
+  }
+
+  /**
+   * Check if a point is over a microphone
+   * Returns 'left', 'right', or null
+   */
+  getMicAt(canvasX, canvasY) {
+    const mics = this.getMicPositions();
+    const hitRadius = this.micIconSize / 2 + 6;
+
+    const distLeft = Math.sqrt((canvasX - mics.left.x) ** 2 + (canvasY - mics.left.y) ** 2);
+    const distRight = Math.sqrt((canvasX - mics.right.x) ** 2 + (canvasY - mics.right.y) ** 2);
+
+    if (distLeft <= hitRadius) return 'left';
+    if (distRight <= hitRadius) return 'right';
+    return null;
+  }
+
+  /**
+   * Set microphone separation (called from external controls)
+   */
+  setMicSeparation(separation) {
+    this.micSeparation = Math.max(0.5, Math.min(6, separation));
+    this.render();
   }
 
   /**
@@ -181,6 +235,18 @@ export class StageCanvas {
    */
   handleMouseDown(e) {
     const pos = this.getMousePos(e);
+
+    // Check for mic click first
+    const micSide = this.getMicAt(pos.x, pos.y);
+    if (micSide) {
+      this.isDraggingMic = true;
+      this.draggingMicSide = micSide;
+      this.micDragStartX = pos.x;
+      this.micDragStartSeparation = this.micSeparation;
+      this.canvas.style.cursor = 'ew-resize';
+      return;
+    }
+
     const { id: trackId, zone } = this.findTrackAt(pos.x, pos.y);
 
     if (trackId) {
@@ -254,6 +320,28 @@ export class StageCanvas {
   handleMouseMove(e) {
     const pos = this.getMousePos(e);
 
+    // Handle mic dragging
+    if (this.isDraggingMic) {
+      const deltaX = pos.x - this.micDragStartX;
+      const centerX = this.width / 2;
+
+      // Calculate new separation based on drag
+      // Moving left mic left or right mic right increases separation
+      const direction = this.draggingMicSide === 'left' ? -1 : 1;
+      const pixelsPerMeter = 30; // Sensitivity
+      const separationDelta = (deltaX * direction) / pixelsPerMeter;
+      const newSeparation = Math.max(0.5, Math.min(6, this.micDragStartSeparation + separationDelta));
+
+      if (newSeparation !== this.micSeparation) {
+        this.micSeparation = newSeparation;
+        if (this.onMicSeparationChange) {
+          this.onMicSeparationChange(newSeparation);
+        }
+        this.render();
+      }
+      return;
+    }
+
     if (this.isResizing && this.dragTrackId) {
       // Resize mode: vertical drag changes gain
       const track = this.tracks.get(this.dragTrackId);
@@ -281,6 +369,18 @@ export class StageCanvas {
       }
       this.render();
     } else {
+      // Check mic hover first
+      const micSide = this.getMicAt(pos.x, pos.y);
+      if (micSide) {
+        if (this.hoveredZone !== 'mic-' + micSide) {
+          this.hoveredTrackId = null;
+          this.hoveredZone = 'mic-' + micSide;
+          this.canvas.style.cursor = 'ew-resize';
+          this.render();
+        }
+        return;
+      }
+
       // Update hover state
       const { id: trackId, zone } = this.findTrackAt(pos.x, pos.y);
 
@@ -309,6 +409,8 @@ export class StageCanvas {
   handleMouseUp(e) {
     this.isDragging = false;
     this.isResizing = false;
+    this.isDraggingMic = false;
+    this.draggingMicSide = null;
     this.dragTrackId = null;
     this.canvas.style.cursor = 'default';
   }
@@ -622,10 +724,124 @@ export class StageCanvas {
 
     this.drawStage();
     this.drawGrid();
+    this.drawMicrophones();
 
     for (const [id, track] of this.tracks) {
       this.drawTrackNode(id, track);
     }
+  }
+
+  /**
+   * Draw the L and R microphones
+   */
+  drawMicrophones() {
+    const ctx = this.ctx;
+    const mics = this.getMicPositions();
+    const size = this.micIconSize;
+    const isLeftHovered = this.hoveredZone === 'mic-left' || this.draggingMicSide === 'left';
+    const isRightHovered = this.hoveredZone === 'mic-right' || this.draggingMicSide === 'right';
+
+    // Draw connecting line between mics
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(mics.left.x, mics.left.y);
+    ctx.lineTo(mics.right.x, mics.right.y);
+    ctx.strokeStyle = '#dfd0bf';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Draw center marker
+    const centerX = this.width / 2;
+    ctx.beginPath();
+    ctx.arc(centerX, mics.left.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#dfd0bf';
+    ctx.fill();
+    ctx.restore();
+
+    // Draw separation label
+    ctx.save();
+    ctx.font = '11px "SF Mono", Monaco, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#5a5247';
+    ctx.fillText(`${this.micSeparation.toFixed(1)}m`, centerX, mics.left.y + 12);
+    ctx.restore();
+
+    // Draw left microphone
+    this.drawMicIcon(mics.left.x, mics.left.y, 'L', isLeftHovered);
+
+    // Draw right microphone
+    this.drawMicIcon(mics.right.x, mics.right.y, 'R', isRightHovered);
+  }
+
+  /**
+   * Draw a single microphone icon
+   */
+  drawMicIcon(x, y, label, isHovered) {
+    const ctx = this.ctx;
+    const size = this.micIconSize;
+
+    ctx.save();
+
+    // Shadow
+    if (isHovered) {
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetY = 2;
+    }
+
+    // Microphone body (capsule shape)
+    ctx.beginPath();
+    ctx.arc(x, y - size * 0.15, size * 0.4, Math.PI, 0, false);
+    ctx.lineTo(x + size * 0.4, y + size * 0.2);
+    ctx.arc(x, y + size * 0.2, size * 0.4, 0, Math.PI, false);
+    ctx.closePath();
+
+    // Fill with gradient
+    const gradient = ctx.createLinearGradient(x - size * 0.4, y, x + size * 0.4, y);
+    gradient.addColorStop(0, isHovered ? '#5a5247' : '#6b6b6b');
+    gradient.addColorStop(0.5, isHovered ? '#8c3f21' : '#888888');
+    gradient.addColorStop(1, isHovered ? '#5a5247' : '#6b6b6b');
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+
+    // Mic grille lines
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+    ctx.lineWidth = 1;
+    for (let i = -2; i <= 2; i++) {
+      const lineY = y - size * 0.1 + i * 4;
+      ctx.beginPath();
+      ctx.moveTo(x - size * 0.25, lineY);
+      ctx.lineTo(x + size * 0.25, lineY);
+      ctx.stroke();
+    }
+
+    // Stand
+    ctx.beginPath();
+    ctx.moveTo(x, y + size * 0.2);
+    ctx.lineTo(x, y + size * 0.5);
+    ctx.strokeStyle = isHovered ? '#8c3f21' : '#888888';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // Base
+    ctx.beginPath();
+    ctx.moveTo(x - size * 0.3, y + size * 0.5);
+    ctx.lineTo(x + size * 0.3, y + size * 0.5);
+    ctx.stroke();
+
+    // Label
+    ctx.font = `bold ${size * 0.5}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = isHovered ? '#b85c38' : '#5a5247';
+    ctx.fillText(label, x, y - size * 0.7);
+
+    ctx.restore();
   }
 
   /**
