@@ -878,6 +878,45 @@ button.primary:hover {
   background: var(--ink-soft);
 }
 
+/* Footer */
+#app-footer {
+  text-align: center;
+  padding: 16px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+#app-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+#app-footer a:hover {
+  text-decoration: underline;
+}
+
+#app-footer .sep {
+  margin: 0 10px;
+  color: var(--panel-border);
+}
+
+/* Panel subtitle */
+.panel-subtitle {
+  font-size: 11px;
+  color: var(--ink-soft);
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+
+.panel-subtitle a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.panel-subtitle a:hover {
+  text-decoration: underline;
+}
+
 /* Responsive */
 @media (max-width: 960px) {
   #app {

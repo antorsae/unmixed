@@ -24,7 +24,10 @@
     <main id="main-content">
       <!-- Left sidebar: Profile selector -->
       <aside id="profile-panel">
-        <h2>Load Profile</h2>
+        <h2>Anechoic Recordings</h2>
+        <p class="panel-subtitle">
+          Symphonic recordings from <a href="https://research.cs.aalto.fi/acoustics/virtual-acoustics/research/acoustic-measurement-and-analysis/85-anechoic-recordings.html" target="_blank" rel="noopener">Aalto University</a>
+        </p>
         <div id="profile-options">
           <label class="profile-radio">
             <input type="radio" name="profile" value="mozart" checked>
@@ -78,11 +81,9 @@
         <canvas id="stage-canvas"></canvas>
         <div id="stage-labels">
           <span class="label-left">L</span>
-          <span class="label-center">C</span>
           <span class="label-right">R</span>
           <span class="label-front">Front</span>
           <span class="label-back">Back</span>
-          <span class="label-audience">AUDIENCE</span>
         </div>
       </section>
     </main>
@@ -204,6 +205,15 @@
       <p>Desktop browser recommended for best experience.</p>
       <button id="dismiss-mobile-warning" class="btn secondary">Continue Anyway</button>
     </div>
+
+    <!-- Footer -->
+    <footer id="app-footer">
+      <p>
+        <a href="https://github.com/antorsae/web-mixer" target="_blank" rel="noopener">GitHub</a>
+        <span class="sep">|</span>
+        Recordings: <a href="https://research.cs.aalto.fi/acoustics/virtual-acoustics/research/acoustic-measurement-and-analysis/85-anechoic-recordings.html" target="_blank" rel="noopener">Aalto University</a>
+      </p>
+    </footer>
   </div>
 
   <script type="module" src="js/app.js?v=5"></script>
