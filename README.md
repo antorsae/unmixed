@@ -6,6 +6,70 @@ A web-based audio mixer that simulates the physics of sound propagation in a con
 
 **[https://antorsae.github.io/web-mixer/](https://antorsae.github.io/web-mixer/)**
 
+## Motivation
+
+Today's music distribution is almost exclusively **premixed stereo**. A sound engineer makes permanent artistic decisions about where each instrument sits in the stereo field, how much reverb to apply, and what the overall balance should be. These choices are baked into the final mix and cannot be changed by the listener.
+
+But what if we distributed **unmixed audio** instead?
+
+Rather than a single stereo file, imagine receiving a bundle of individual instrument stems. The listener could then:
+
+- **Reposition instruments** to match their preferred concert hall layout
+- **Adjust the balance** between sections (more brass, less strings)
+- **Choose their own reverb** and acoustic environment
+- **Sit wherever they want** in the virtual concert hall
+
+This is not a new idea—it's simply how **live music** works. When you attend a concert, you hear what reaches your ears from your particular seat. Unmixed distribution brings this experience to recorded music.
+
+## Relation to Object-Based and Scene-Based Audio
+
+Audio researchers distinguish between two paradigms:
+
+**Scene-based audio** (e.g., Ambisonics) captures or synthesizes the complete soundfield at a point in space. The listener can rotate their head, but the spatial relationships between sources are fixed.
+
+**Object-based audio** (e.g., Dolby Atmos, MPEG-H) transmits individual audio objects with metadata describing their intended positions. A renderer places these objects in the listener's speaker or headphone configuration.
+
+**Unmixed audio** is a more radical form of object-based audio:
+
+| Aspect | Traditional Object-Based | Unmixed |
+|--------|-------------------------|---------|
+| Position metadata | Authored by engineer | None—listener decides |
+| Intended playback | Specific speaker layouts | Any rendering approach |
+| Listener control | Limited (within authored bounds) | Complete |
+| File format | Proprietary containers | Simple audio files |
+
+Unmixed audio treats stems as raw material, not as objects with prescribed positions. The listener (or their software) makes all spatial decisions.
+
+## Non-Goals
+
+This project is **not** trying to:
+
+- **Replace professional mixing** — A skilled engineer's artistic vision is valuable. Unmixed distribution is an alternative, not a replacement.
+- **Solve the "loudness war"** — Though unmixed audio sidesteps master bus compression, that's not the primary motivation.
+- **Require new hardware** — Standard stereo headphones or speakers work fine. The mixing happens in software.
+- **Standardize a format** — We use plain audio files (MP3, WAV, FLAC). No new container format needed.
+
+## Intended Use
+
+**For listeners:**
+- Experience classical recordings as if seated in different positions
+- Isolate instruments to study orchestration
+- Create personal "reference mixes" of favorite pieces
+
+**For researchers:**
+- Study acoustic phenomena with controlled source material
+- Test spatial audio algorithms on real orchestral content
+- Develop new rendering techniques
+
+**For educators:**
+- Teach orchestration by letting students hear individual instruments
+- Demonstrate acoustic principles (ITD, ILD, air absorption)
+- Explore microphone techniques interactively
+
+**For musicians:**
+- Practice along with isolated sections
+- Study how professional orchestras balance parts
+
 ## Features
 
 ### Physics-Based Audio Simulation
@@ -204,6 +268,33 @@ python -m http.server 8080
 # or
 npx serve .
 ```
+
+## How to Contribute
+
+### Unmixed Recordings
+
+The biggest contribution would be more unmixed content:
+
+- **Anechoic recordings** of ensembles (chamber music, jazz combos, choirs)
+- **Multitrack session stems** from existing recordings (with rights clearance)
+- **Live concert recordings** with isolated instrument feeds
+
+If you have access to such material and can share it (or know someone who can), please open an issue.
+
+### AI Source Separation
+
+Modern AI models (Demucs, Spleeter, SAM from Meta, etc.) can separate mixed recordings into stems. While not perfect, this could dramatically expand available content:
+
+- Integration with browser-based separation models
+- Curated collections of AI-separated classical recordings
+- Quality assessment tools to evaluate separation artifacts
+
+### Code
+
+- **New acoustic models**: Room geometry, HRTF binaural rendering, measured impulse responses
+- **UI improvements**: Better touch support, accessibility, mobile layout
+- **Performance**: Web Worker audio processing, WASM acceleration
+- **Format support**: Additional audio codecs, stem package formats
 
 ## License
 
