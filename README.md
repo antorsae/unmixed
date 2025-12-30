@@ -1,4 +1,4 @@
-# Orpheus Mixer
+# Unmixed
 
 A web-based audio mixer that simulates the physics of sound propagation in a concert hall environment. Load anechoic (echo-free) symphony orchestra recordings and position instruments on a virtual stage to create realistic stereo mixes.
 

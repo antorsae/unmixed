@@ -11,7 +11,7 @@ const defaultState = {
   profile: null,
   profileName: null,
   tracks: {}, // filename -> { x, y, gain, muted, solo }
-  masterGain: 0.8,
+  masterGain: 1.0,
   reverbPreset: 'none',
   reverbMode: 'depth',
   groundReflectionModel: 'stage',

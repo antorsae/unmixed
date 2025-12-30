@@ -1033,9 +1033,13 @@ export class AudioEngine {
 
     if (preset === 'none') {
       this.reverbGainNode.gain.value = 0;
+      this.reverbNode.buffer = null;
     } else if (impulseBuffer) {
       this.reverbNode.buffer = impulseBuffer;
-      this.reverbGainNode.gain.value = wetLevel;
+      // Wet level is applied in per-track sends, keep return gain at unity.
+      this.reverbGainNode.gain.value = 1;
+    } else {
+      this.reverbGainNode.gain.value = 0;
     }
   }
 
@@ -1191,13 +1195,14 @@ export class AudioEngine {
     let delayC = null;
     let airAbsorbC = null;
     let centerBus = null;
+    let prevNodeC = null;
 
     if (hasCenter && mixerC) {
       delayC = this.context.createDelay(0.1);
       airAbsorbC = this.createAirAbsorptionFilterBank(this.context);
 
       mixerC.connect(delayC);
-      let prevNodeC = delayC;
+      prevNodeC = delayC;
       for (const filter of airAbsorbC) {
         prevNodeC.connect(filter);
         prevNodeC = filter;
@@ -1316,18 +1321,18 @@ export class AudioEngine {
       }
     }
 
-    // === REVERB SEND (stereo - preserve L/R separation) ===
+    // === REVERB SEND (post-distance/absorption for realistic depth) ===
     const reverbSendL = this.context.createGain();
     const reverbSendR = this.context.createGain();
     const reverbMerger = this.context.createChannelMerger(2);
-    mixerL.connect(reverbSendL);
-    mixerR.connect(reverbSendR);
+    prevNodeL.connect(reverbSendL);
+    prevNodeR.connect(reverbSendR);
     reverbSendL.connect(reverbMerger, 0, 0);
     reverbSendR.connect(reverbMerger, 0, 1);
     let reverbSendC = null;
-    if (hasCenter && mixerC) {
+    if (hasCenter && prevNodeC) {
       reverbSendC = this.context.createGain();
-      mixerC.connect(reverbSendC);
+      prevNodeC.connect(reverbSendC);
       reverbSendC.connect(reverbMerger, 0, 0);
       reverbSendC.connect(reverbMerger, 0, 1);
     }
@@ -1629,7 +1634,7 @@ export class AudioEngine {
     // Create reverb
     let reverbConvolver = null;
     const reverbGain = offlineContext.createGain();
-    reverbGain.gain.value = this.reverbPreset === 'none' ? 0 : this.reverbMix;
+    reverbGain.gain.value = this.reverbPreset === 'none' ? 0 : 1;
     reverbGain.connect(masterGain);
 
     if (this.reverbNode.buffer && this.reverbPreset !== 'none') {
@@ -1808,6 +1813,7 @@ export class AudioEngine {
 
       // Center channel processing (Decca Tree)
       let centerBus = null;
+      let prevC = null;
       if (hasCenter && mixerC) {
         const delayC = offlineContext.createDelay(0.1);
         delayC.delayTime.value = baseDelay + itdC;
@@ -1815,7 +1821,7 @@ export class AudioEngine {
         const absorptionC = this.calculateAirAbsorption(distC);
         absorbC.forEach((filter, i) => { filter.gain.value = absorptionC[i].gainDb; });
         mixerC.connect(delayC);
-        let prevC = delayC;
+        prevC = delayC;
         for (const filter of absorbC) {
           prevC.connect(filter);
           prevC = filter;
@@ -2009,10 +2015,10 @@ export class AudioEngine {
         if (reverbSendC) {
           reverbSendC.gain.value = reverbLevel * CENTER_PAN_GAIN;
         }
-        mixerL.connect(reverbSendL);
-        mixerR.connect(reverbSendR);
-        if (reverbSendC) {
-          mixerC.connect(reverbSendC);
+        prevL.connect(reverbSendL);
+        prevR.connect(reverbSendR);
+        if (reverbSendC && prevC) {
+          prevC.connect(reverbSendC);
         }
         // Create stereo merger for reverb input
         const reverbMerger = offlineContext.createChannelMerger(2);

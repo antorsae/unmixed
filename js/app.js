@@ -16,7 +16,7 @@ const state = {
   tracks: new Map(), // trackId -> full track data
   currentProfile: null,
   currentProfileName: null,
-  masterGain: 0.8,
+  masterGain: 1.0,
   reverbPreset: 'none',
   reverbMode: 'depth',
   groundReflectionEnabled: false,
@@ -1971,7 +1971,7 @@ async function restoreSession() {
   if (!session) return;
 
   // Apply settings
-  state.masterGain = session.masterGain ?? 0.8;
+  state.masterGain = session.masterGain ?? 1.0;
   state.reverbPreset = session.reverbPreset ?? 'concert-hall';
   state.reverbMode = session.reverbMode ?? 'depth';
   state.micSeparation = session.micSeparation ?? 2;
