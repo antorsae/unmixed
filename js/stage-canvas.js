@@ -10,6 +10,7 @@ import {
   createMicrophoneConfig,
 } from './microphone-types.js';
 import { getPolarPatternPoints } from './microphone-math.js';
+import { getIconInfo, drawInstrumentIcon, getShapeBounds } from './instrument-icons.js';
 
 export class StageCanvas {
   constructor(canvas) {
@@ -89,11 +90,31 @@ export class StageCanvas {
     this.width = rect.width;
     this.height = rect.height;
 
+    // Calculate uniform scaling to maintain proper aspect ratio
+    // Stage is 20m wide (X: -10m to +10m), 15m deep (Y: 0 to 15m)
+    // We need same pixels-per-meter for both axes so 1m x 1m is always square
+    const availableWidth = this.width - this.padding * 2;
+    const availableHeight = this.height - this.padding * 2 - 30; // 30px for title area
+
+    const pixelsPerMeterX = availableWidth / 20;  // If stage filled width
+    const pixelsPerMeterY = availableHeight / 15; // If stage filled height
+
+    // Use smaller scale to fit stage in available space
+    this.pixelsPerMeter = Math.min(pixelsPerMeterX, pixelsPerMeterY);
+
+    // Calculate actual stage dimensions in pixels (with uniform scale)
+    this.stagePixelWidth = this.pixelsPerMeter * 20;
+    this.stagePixelHeight = this.pixelsPerMeter * 15;
+
+    // Center the stage in the available space
+    this.stageOffsetX = this.padding + (availableWidth - this.stagePixelWidth) / 2;
+    this.stageOffsetY = this.padding + 30 + (availableHeight - this.stagePixelHeight) / 2;
+
     this.render();
   }
 
   /**
-   * Calculate node radius based on gain
+   * Calculate node radius based on gain (for hit testing and M/S icon positioning)
    */
   getNodeRadius(gain) {
     // gain 0 -> minRadius, gain 1 -> baseRadius, gain 2 -> maxRadius
@@ -102,28 +123,51 @@ export class StageCanvas {
   }
 
   /**
+   * Calculate icon size based on gain (SIZE = VOLUME)
+   * gain 0.0 → 16px (minimum visible)
+   * gain 0.5 → 24px
+   * gain 1.0 → 32px (default)
+   * gain 1.5 → 44px
+   * gain 2.0 → 56px (maximum)
+   */
+  getIconSize(gain) {
+    const clampedGain = Math.max(0, Math.min(2, gain));
+    // Non-linear scaling: slower growth at low gain, faster at high
+    // Using quadratic curve for more dramatic visual difference
+    return 16 + clampedGain * clampedGain * 10;
+  }
+
+  /**
    * Convert track coordinates to canvas coordinates
+   * Uses uniform scaling to maintain proper aspect ratio (1m = 1m in both axes)
    */
   trackToCanvas(x, y) {
-    const stageWidth = this.width - this.padding * 2;
-    const stageHeight = this.height - this.padding * 2 - 30;
+    // Convert normalized (-1..1 X, 0..1 Y) to stage meters
+    const metersX = x * 10;  // -1..1 → -10..10
+    const metersY = y * 15;  // 0..1 → 0..15 (0 = front, 1 = back)
 
-    const canvasX = this.padding + ((x + 1) / 2) * stageWidth;
-    const canvasY = this.padding + 30 + (1 - y) * stageHeight;
+    // Convert to pixels using uniform scale, centered in available space
+    const canvasX = this.stageOffsetX + (this.stagePixelWidth / 2) + metersX * this.pixelsPerMeter;
+    // Y is inverted: y=0 (front) is at bottom of stage area, y=1 (back) is at top
+    const canvasY = this.stageOffsetY + this.stagePixelHeight - metersY * this.pixelsPerMeter;
 
     return { x: canvasX, y: canvasY };
   }
 
   /**
    * Convert canvas coordinates to track coordinates
+   * Uses uniform scaling to maintain proper aspect ratio (1m = 1m in both axes)
    */
   canvasToTrack(canvasX, canvasY) {
-    const stageWidth = this.width - this.padding * 2;
-    const stageHeight = this.height - this.padding * 2 - 30;
+    // Invert the trackToCanvas transformation
+    const metersX = (canvasX - this.stageOffsetX - this.stagePixelWidth / 2) / this.pixelsPerMeter;
+    const metersY = (this.stageOffsetY + this.stagePixelHeight - canvasY) / this.pixelsPerMeter;
 
-    let x = ((canvasX - this.padding) / stageWidth) * 2 - 1;
-    let y = 1 - (canvasY - this.padding - 30) / stageHeight;
+    // Convert meters to normalized coordinates
+    let x = metersX / 10;  // -10..10 → -1..1
+    let y = metersY / 15;  // 0..15 → 0..1
 
+    // Clamp to stage bounds
     x = Math.max(-1, Math.min(1, x));
     y = Math.max(0, Math.min(1, y));
 
@@ -191,13 +235,9 @@ export class StageCanvas {
    * { L: {x, y, angle, pattern}, R: {x, y, angle, pattern}, C?: {...} }
    */
   getMicPositions() {
-    const centerX = this.width / 2;
-    const micY = this.height - this.padding + 20; // Below the stage
-
-    // Convert separation (meters) to pixels
-    // Map 0.5-6m to roughly 20-200px spread from center
-    const maxSpread = Math.min(this.width / 2 - this.padding - 30, 200);
-    const minSpread = 20;
+    // Mic base position: centered horizontally, below the stage area
+    const centerX = this.stageOffsetX + this.stagePixelWidth / 2;
+    const micY = this.stageOffsetY + this.stagePixelHeight + 20; // Below the stage
 
     // Apply technique layout to get current mic positions
     const layoutConfig = applyTechniqueLayout({ ...this.micConfig });
@@ -208,14 +248,13 @@ export class StageCanvas {
     for (const mic of layoutConfig.mics) {
       if (!mic.enabled) continue;
 
-      // Calculate pixel position based on mic offset
-      // For spacing-based techniques, use offsetX (in meters)
-      // Convert meters to pixels using same scale as separation slider
-      const normalizedOffset = mic.offsetX / 3; // Normalize to -1 to 1 range (assuming max 3m offset)
-      const pixelOffsetX = normalizedOffset * maxSpread;
+      // Calculate pixel position based on mic offset (in meters)
+      // Use uniform scale for both X and Y
+      const pixelOffsetX = mic.offsetX * this.pixelsPerMeter;
 
-      // For center depth (Decca Tree), convert Y offset
-      const pixelOffsetY = mic.offsetY ? -mic.offsetY * 15 : 0; // Negative because canvas Y is inverted
+      // For center depth (Decca Tree), convert Y offset using same scale
+      // Negative because canvas Y is inverted (up on canvas = forward on stage)
+      const pixelOffsetY = mic.offsetY ? -mic.offsetY * this.pixelsPerMeter : 0;
 
       result[mic.id] = {
         x: centerX + pixelOffsetX,
@@ -370,14 +409,19 @@ export class StageCanvas {
     for (const id of trackIds) {
       const track = this.tracks.get(id);
       const pos = this.trackToCanvas(track.x, track.y);
-      const radius = this.getNodeRadius(track.gain);
+      const iconSize = this.getIconSize(track.gain);
+
+      // Get shape bounds for hit testing
+      const iconInfo = track.iconInfo || getIconInfo(track.name, track.family);
+      const bounds = getShapeBounds(iconInfo.shape, iconSize);
+      const halfW = bounds.width / 2;
+      const halfH = bounds.height / 2;
 
       const dx = canvasX - pos.x;
       const dy = canvasY - pos.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
 
-      // Check M/S icon positions (badges at bottom of circle)
-      const badgeY = pos.y + radius - 6;
+      // Check M/S icon positions (badges at bottom of icon)
+      const badgeY = pos.y + halfH - 4;
       const muteIconX = pos.x - 10;
       const muteIconY = badgeY;
       const soloIconX = pos.x + 10;
@@ -391,14 +435,17 @@ export class StageCanvas {
       if (muteHit) return { id, zone: 'mute' };
       if (soloHit) return { id, zone: 'solo' };
 
-      // Check edge (outer 25% of radius)
-      const edgeThreshold = radius * 0.75;
-      if (dist <= radius && dist >= edgeThreshold) {
-        return { id, zone: 'edge' };
-      }
+      // Check if within bounding box (with some padding)
+      const inBounds = Math.abs(dx) <= halfW + 4 && Math.abs(dy) <= halfH + 4;
 
-      // Check center
-      if (dist < edgeThreshold) {
+      if (inBounds) {
+        // Edge zone: outer 25% of bounds
+        const edgeMargin = Math.min(halfW, halfH) * 0.25;
+        const inEdge = Math.abs(dx) > halfW - edgeMargin || Math.abs(dy) > halfH - edgeMargin;
+
+        if (inEdge) {
+          return { id, zone: 'edge' };
+        }
         return { id, zone: 'center' };
       }
     }
@@ -415,6 +462,7 @@ export class StageCanvas {
     this.canvas.addEventListener('mouseup', (e) => this.handleMouseUp(e));
     this.canvas.addEventListener('mouseleave', (e) => this.handleMouseLeave(e));
     this.canvas.addEventListener('dblclick', (e) => this.handleDoubleClick(e));
+    this.canvas.addEventListener('wheel', (e) => this.handleWheel(e), { passive: false });
 
     this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
     this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
@@ -529,11 +577,11 @@ export class StageCanvas {
     if (this.isDraggingMic) {
       const deltaX = pos.x - this.micDragStartX;
       const deltaY = pos.y - this.micDragStartY;
-      const pixelsPerMeter = 30; // Sensitivity
 
+      // Use uniform scale for consistent feel
       if (this.draggingMicSide === 'center') {
         // Center mic: vertical drag changes depth (Decca Tree)
-        const depthDelta = -deltaY / pixelsPerMeter; // Up = more depth
+        const depthDelta = -deltaY / this.pixelsPerMeter; // Up = more depth
         const technique = STEREO_TECHNIQUES[this.micConfig?.technique];
         if (technique?.adjustable?.centerDepth) {
           const { min, max } = technique.adjustable.centerDepth;
@@ -550,7 +598,7 @@ export class StageCanvas {
       } else {
         // L/R mic: horizontal drag changes separation
         const direction = this.draggingMicSide === 'left' ? -1 : 1;
-        const separationDelta = (deltaX * direction) / pixelsPerMeter;
+        const separationDelta = (deltaX * direction) / this.pixelsPerMeter;
         const limits = this.getSpacingLimits();
         const newSeparation = Math.max(limits.min, Math.min(limits.max, this.micDragStartSeparation + separationDelta));
 
@@ -664,14 +712,51 @@ export class StageCanvas {
   }
 
   /**
-   * Handle double click
+   * Handle double click - reset gain to 1.0
    */
   handleDoubleClick(e) {
     const pos = this.getMousePos(e);
     const { id: trackId } = this.findTrackAt(pos.x, pos.y);
 
+    if (trackId) {
+      // Reset gain to default (1.0)
+      const track = this.tracks.get(trackId);
+      if (track) {
+        track.gain = 1.0;
+        if (this.onTrackGainChange) {
+          this.onTrackGainChange(trackId, 1.0);
+        }
+        this.render();
+      }
+    }
+
     if (trackId && this.onTrackDoubleClick) {
       this.onTrackDoubleClick(trackId);
+    }
+  }
+
+  /**
+   * Handle mouse wheel - fine gain adjustment
+   */
+  handleWheel(e) {
+    const pos = this.getMousePos(e);
+    const { id: trackId } = this.findTrackAt(pos.x, pos.y);
+
+    if (trackId) {
+      e.preventDefault();
+
+      const track = this.tracks.get(trackId);
+      if (track) {
+        // Scroll up = increase gain, scroll down = decrease
+        const delta = -e.deltaY * 0.002; // Fine adjustment
+        const newGain = Math.max(0, Math.min(2, track.gain + delta));
+
+        track.gain = newGain;
+        if (this.onTrackGainChange) {
+          this.onTrackGainChange(trackId, newGain);
+        }
+        this.render();
+      }
     }
   }
 
@@ -731,7 +816,10 @@ export class StageCanvas {
 
       const newCanvasX = pos.x - this.dragOffset.x;
       const newCanvasY = pos.y - this.dragOffset.y;
-      const newPos = this.canvasToTrack(newCanvasX, newCanvasY);
+      let newPos = this.canvasToTrack(newCanvasX, newCanvasY);
+
+      // Enforce minimum distance from mics (0.5m)
+      newPos = this.constrainMinDistanceFromMics(newPos, 0.5);
 
       const track = this.tracks.get(this.dragTrackId);
       track.x = newPos.x;
@@ -810,9 +898,15 @@ export class StageCanvas {
   }
 
   /**
-   * Get display name (with prefix stripped)
+   * Get display name using iconInfo (full instrument name + index)
+   * e.g., "Oboe 4" instead of "ob4"
    */
   getDisplayName(track) {
+    const iconInfo = track.iconInfo || getIconInfo(track.name, track.family);
+    if (iconInfo && iconInfo.name) {
+      return iconInfo.index ? `${iconInfo.name} ${iconInfo.index}` : iconInfo.name;
+    }
+    // Fallback to raw name with prefix stripped
     if (this.commonPrefix && track.name.startsWith(this.commonPrefix)) {
       return track.name.slice(this.commonPrefix.length);
     }
@@ -823,6 +917,9 @@ export class StageCanvas {
    * Add a track to the canvas
    */
   addTrack(id, data) {
+    // Pre-compute icon info for efficient rendering
+    const iconInfo = getIconInfo(data.name, data.family);
+
     this.tracks.set(id, {
       x: data.x,
       y: data.y,
@@ -831,6 +928,7 @@ export class StageCanvas {
       gain: data.gain ?? 1,
       muted: data.muted ?? false,
       solo: data.solo ?? false,
+      iconInfo, // Cached icon info
     });
     // Don't update prefix on every add - call refreshCommonPrefix() after batch add
     this.render();
@@ -959,6 +1057,7 @@ export class StageCanvas {
 
     this.drawStage();
     this.drawGrid();
+    this.drawScaleIndicator();
     this.drawMicrophones();
 
     for (const [id, track] of this.tracks) {
@@ -1220,23 +1319,33 @@ export class StageCanvas {
   }
 
   /**
-   * Draw the semi-circular stage
+   * Draw the semi-circular/elliptical stage
+   * Matches the coordinate system used by trackToCanvas()
    */
   drawStage() {
     const ctx = this.ctx;
+    const stageWidth = this.width - this.padding * 2;
+    const stageHeight = this.height - this.padding * 2 - 30;
+
     const centerX = this.width / 2;
     const bottomY = this.height - this.padding;
-    const radius = Math.min(this.width - this.padding * 2, (this.height - this.padding * 2 - 30) * 1.5) / 2;
+
+    // Stage dimensions match coordinate system:
+    // X: [-1, 1] maps to stageWidth (so radius X = stageWidth/2)
+    // Y: [0, 1] maps to stageHeight (so radius Y = stageHeight)
+    const radiusX = stageWidth / 2;
+    const radiusY = stageHeight;
 
     ctx.save();
 
+    // Draw half-ellipse matching the coordinate bounds
     ctx.beginPath();
-    ctx.arc(centerX, bottomY, radius, Math.PI, 0, false);
-    ctx.lineTo(centerX + radius, bottomY);
-    ctx.lineTo(centerX - radius, bottomY);
+    ctx.ellipse(centerX, bottomY, radiusX, radiusY, 0, Math.PI, 0, false);
+    ctx.lineTo(centerX + radiusX, bottomY);
+    ctx.lineTo(centerX - radiusX, bottomY);
     ctx.closePath();
 
-    const gradient = ctx.createRadialGradient(centerX, bottomY, 0, centerX, bottomY, radius);
+    const gradient = ctx.createRadialGradient(centerX, bottomY, 0, centerX, bottomY, Math.max(radiusX, radiusY));
     gradient.addColorStop(0, '#f8f8f8');
     gradient.addColorStop(1, '#eeeeee');
     ctx.fillStyle = gradient;
@@ -1282,80 +1391,130 @@ export class StageCanvas {
   }
 
   /**
-   * Draw a track node
+   * Draw scale indicator in bottom-left corner
+   * Shows 1m, 2m, 5m reference based on current canvas size
+   * Now uses uniform scaling so the indicator is always square
    */
-  drawTrackNode(id, track) {
-    try {
+  drawScaleIndicator() {
     const ctx = this.ctx;
-    const pos = this.trackToCanvas(track.x, track.y);
-    const isSelected = this.selectedIds.has(id);
-    const isHovered = this.hoveredTrackId === id;
-    const isMuted = track.muted;
 
-    const color = FAMILY_COLORS[track.family] || '#888888';
-    const radius = this.getNodeRadius(track.gain);
+    // Choose a nice scale length (1m, 2m, or 5m) that fits well
+    let scaleMeters = 5;
+    let scalePixels = scaleMeters * this.pixelsPerMeter;
+    if (scalePixels > 100) {
+      scaleMeters = 2;
+      scalePixels = scaleMeters * this.pixelsPerMeter;
+    }
+    if (scalePixels > 80) {
+      scaleMeters = 1;
+      scalePixels = scaleMeters * this.pixelsPerMeter;
+    }
+
+    // Position in bottom-left corner
+    const x = this.padding + 15;
+    const y = this.height - this.padding - 15;
 
     ctx.save();
 
-    // Draw shadow
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.2)';
-    ctx.shadowBlur = isSelected ? 10 : 5;
-    ctx.shadowOffsetY = 2;
+    // Background box (now square since scalePixels is uniform)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.fillRect(x - 8, y - scalePixels - 25, Math.max(scalePixels, 45) + 16, scalePixels + 35);
 
-    // Draw circle
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+
+    // Horizontal scale (X axis)
     ctx.beginPath();
-    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-
-    // Fill (dimmed if muted)
-    ctx.fillStyle = isMuted ? this.dimColor(color, 0.4) : color;
-    ctx.fill();
-
-    ctx.shadowColor = 'transparent';
-
-    // Edge highlight when hovering edge zone
-    if (isHovered && this.hoveredZone === 'edge') {
-      ctx.strokeStyle = '#2563eb';
-      ctx.lineWidth = 4;
-    } else if (isSelected) {
-      ctx.strokeStyle = '#2563eb';
-      ctx.lineWidth = 3;
-    } else if (isHovered) {
-      ctx.strokeStyle = '#666666';
-      ctx.lineWidth = 2;
-    } else {
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
-      ctx.lineWidth = 1;
-    }
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + scalePixels, y);
+    // End caps
+    ctx.moveTo(x, y - 4);
+    ctx.lineTo(x, y + 4);
+    ctx.moveTo(x + scalePixels, y - 4);
+    ctx.lineTo(x + scalePixels, y + 4);
     ctx.stroke();
 
-    // Draw label (inside circle)
-    ctx.fillStyle = isMuted ? 'rgba(255,255,255,0.6)' : 'white';
-    ctx.font = `bold ${Math.max(9, Math.min(12, radius * 0.6))}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    // Vertical scale (Y axis / depth)
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y - scalePixels);
+    // End caps
+    ctx.moveTo(x - 4, y);
+    ctx.lineTo(x + 4, y);
+    ctx.moveTo(x - 4, y - scalePixels);
+    ctx.lineTo(x + 4, y - scalePixels);
+    ctx.stroke();
 
-    const displayName = this.getDisplayName(track);
-    let label = displayName;
-    const maxChars = Math.floor(radius / 4);
-    if (label.length > maxChars) {
-      label = label.substring(0, maxChars - 1) + '…';
-    }
-    ctx.fillText(label, pos.x, pos.y);
+    // Labels
+    ctx.fillStyle = '#555';
+    ctx.font = '10px "SF Mono", Monaco, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`${scaleMeters}m`, x + scalePixels / 2, y + 5);
+
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${scaleMeters}m`, x - 6, y - scalePixels / 2);
+
+    // Corner label
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.font = '9px "SF Mono", Monaco, monospace';
+    ctx.fillStyle = '#888';
+    ctx.fillText('X↔ Y↕', x, y - scalePixels - 8);
 
     ctx.restore();
+  }
 
-    // Draw M/S icons (small badges at bottom of circle)
-    const badgeY = pos.y + radius - 6;
-    this.drawMuteIcon(pos.x - 10, badgeY, track.muted, isHovered && this.hoveredZone === 'mute');
-    this.drawSoloIcon(pos.x + 10, badgeY, track.solo, isHovered && this.hoveredZone === 'solo');
+  /**
+   * Draw a track node with instrument-specific icon
+   */
+  drawTrackNode(id, track) {
+    try {
+      const ctx = this.ctx;
+      const pos = this.trackToCanvas(track.x, track.y);
+      const isSelected = this.selectedIds.has(id);
+      const isHovered = this.hoveredTrackId === id;
+      const isMuted = track.muted;
 
-    // Draw gain indicator arc around circle
-    this.drawGainArc(pos.x, pos.y, radius, track.gain);
+      const color = FAMILY_COLORS[track.family] || '#888888';
+      const iconSize = this.getIconSize(track.gain);
+      const radius = this.getNodeRadius(track.gain); // For M/S positioning and gain arc
 
-    // Draw tooltip if hovered
-    if (isHovered && this.hoveredZone !== 'mute' && this.hoveredZone !== 'solo') {
-      this.drawTooltip(pos.x, pos.y - radius - 25, track);
-    }
+      // Get or compute icon info
+      const iconInfo = track.iconInfo || getIconInfo(track.name, track.family);
+
+      // Check if any track has solo enabled (for dimming non-solo tracks)
+      let anySolo = false;
+      for (const [, t] of this.tracks) {
+        if (t.solo) { anySolo = true; break; }
+      }
+      const isDimmed = anySolo && !track.solo && !isMuted;
+      const isSoloed = track.solo;
+
+      // Draw the instrument icon (handles its own shadow, fill, stroke)
+      // Size now represents volume - bigger = louder
+      drawInstrumentIcon(ctx, pos.x, pos.y, iconInfo, color, iconSize, {
+        isSelected,
+        isHovered: isHovered && this.hoveredZone !== 'mute' && this.hoveredZone !== 'solo',
+        isMuted,
+        isSoloed,
+        isDimmed,
+      });
+
+      // Draw M/S icons only on hover (small badges at bottom of icon)
+      const bounds = getShapeBounds(iconInfo.shape, iconSize);
+      if (isHovered) {
+        const badgeY = pos.y + bounds.height / 2 + 2;
+        this.drawMuteIcon(pos.x - 12, badgeY, track.muted, this.hoveredZone === 'mute');
+        this.drawSoloIcon(pos.x + 12, badgeY, track.solo, this.hoveredZone === 'solo');
+      }
+
+      // Draw tooltip if hovered
+      if (isHovered && this.hoveredZone !== 'mute' && this.hoveredZone !== 'solo') {
+        this.drawTooltip(pos.x, pos.y - bounds.height / 2 - 25, track);
+      }
     } catch (err) {
       console.error('[StageCanvas] Error drawing track:', id, err);
     }
