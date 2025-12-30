@@ -1448,9 +1448,9 @@ export class AudioEngine {
 
   /**
    * Get real-time audio level for a track (0..1 range)
-   * Used for visual animation (pulse/glow when playing)
+   * Uses peak detection with dB scaling for more visible animation
    * @param {string} trackId - Track identifier
-   * @returns {number} RMS level from 0 (silent) to 1 (full scale)
+   * @returns {number} Level from 0 (silent) to 1 (loud)
    */
   getTrackLevel(trackId) {
     const nodes = this.trackNodes.get(trackId);
@@ -1460,16 +1460,21 @@ export class AudioEngine {
     const dataArray = new Uint8Array(nodes.analyser.fftSize);
     nodes.analyser.getByteTimeDomainData(dataArray);
 
-    // Calculate RMS (values are centered at 128, range 0-255)
-    let sumSq = 0;
+    // Find peak amplitude (more responsive than RMS for animation)
+    let peak = 0;
     for (let i = 0; i < dataArray.length; i++) {
-      const v = (dataArray[i] - 128) / 128;  // Normalize to -1..1
-      sumSq += v * v;
+      const v = Math.abs(dataArray[i] - 128) / 128;  // 0..1 range
+      if (v > peak) peak = v;
     }
-    const rms = Math.sqrt(sumSq / dataArray.length);
 
-    // Return RMS, clamped to 0..1 (typically much less than 1)
-    return Math.min(1, rms);
+    // Convert to dB-like scale for perceptual response
+    // Map -60dB to 0dB → 0 to 1 (with floor at -60dB)
+    if (peak < 0.001) return 0;  // Below noise floor
+    const db = 20 * Math.log10(peak);  // peak=1 → 0dB, peak=0.001 → -60dB
+    const normalized = Math.max(0, (db + 60) / 60);  // -60dB→0, 0dB→1
+
+    // Apply curve to emphasize mid-range levels
+    return Math.pow(normalized, 0.7);  // Slight expansion of quieter levels
   }
 
   /**

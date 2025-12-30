@@ -147,25 +147,15 @@ export class StageCanvas {
         // Smooth transitions for each track
         for (const [id, rawLevel] of levels) {
           const current = this.trackLevels.get(id) || 0;
-          // Exponential smoothing: fast attack, slower decay
+          // Exponential smoothing: very fast attack, medium decay
           const smoothed = rawLevel > current
-            ? rawLevel * 0.7 + current * 0.3   // Fast attack
-            : rawLevel * 0.2 + current * 0.8;  // Slow decay
+            ? rawLevel * 0.85 + current * 0.15  // Very fast attack
+            : rawLevel * 0.4 + current * 0.6;   // Medium decay (snappier)
           this.trackLevels.set(id, smoothed);
         }
 
-        // Only re-render if playing (levels are non-zero or recently non-zero)
-        let hasActivity = false;
-        for (const level of this.trackLevels.values()) {
-          if (level > 0.001) {
-            hasActivity = true;
-            break;
-          }
-        }
-
-        if (hasActivity) {
-          this.render();
-        }
+        // Always re-render during animation (levels change frame-to-frame)
+        this.render();
       }
 
       this.animationFrameId = requestAnimationFrame(animate);
@@ -1493,7 +1483,7 @@ export class StageCanvas {
 
   /**
    * Draw subtle grid lines
-   * Uses uniform scaling to match trackToCanvas() coordinate system
+   * Uses meter-based spacing (5m) for square grid cells
    */
   drawGrid() {
     const ctx = this.ctx;
@@ -1503,17 +1493,23 @@ export class StageCanvas {
     ctx.lineWidth = 1;
     ctx.setLineDash([5, 5]);
 
-    // Use uniform-scaled dimensions (same as trackToCanvas)
-    for (let x = -1; x <= 1; x += 0.25) {
-      const canvasX = this.stageOffsetX + ((x + 1) / 2) * this.stagePixelWidth;
+    // Grid spacing in meters (5m gives 4 cells across 20m width, 3 cells across 15m depth)
+    const gridSpacingMeters = 5;
+
+    // Draw vertical lines (X axis: -10m to 10m)
+    for (let xMeters = -10; xMeters <= 10; xMeters += gridSpacingMeters) {
+      const xNorm = xMeters / 10;  // Convert to -1..1
+      const canvasX = this.stageOffsetX + ((xNorm + 1) / 2) * this.stagePixelWidth;
       ctx.beginPath();
       ctx.moveTo(canvasX, this.stageOffsetY);
       ctx.lineTo(canvasX, this.stageOffsetY + this.stagePixelHeight);
       ctx.stroke();
     }
 
-    for (let y = 0; y <= 1; y += 0.25) {
-      const canvasY = this.stageOffsetY + (1 - y) * this.stagePixelHeight;
+    // Draw horizontal lines (Y axis: 0m to 15m)
+    for (let yMeters = 0; yMeters <= 15; yMeters += gridSpacingMeters) {
+      const yNorm = yMeters / 15;  // Convert to 0..1
+      const canvasY = this.stageOffsetY + (1 - yNorm) * this.stagePixelHeight;
       ctx.beginPath();
       ctx.moveTo(this.stageOffsetX, canvasY);
       ctx.lineTo(this.stageOffsetX + this.stagePixelWidth, canvasY);
@@ -1627,24 +1623,23 @@ export class StageCanvas {
       const isDimmed = anySolo && !track.solo && !isMuted;
       const isSoloed = track.solo;
 
-      // Get real-time audio level for animation (0..1, typically 0.05-0.3 for orchestral)
+      // Get real-time audio level for animation (now 0..1 with dB scaling)
       const audioLevel = this.trackLevels.get(id) || 0;
-      // Scale level aggressively for visible effect (orchestral RMS is often low)
-      const animationLevel = Math.min(1, audioLevel * 5);
 
       // Apply animation: scale pulse + glow when playing
       let animatedSize = iconSize;
       let glowColor = null;
       let glowBlur = 0;
 
-      if (animationLevel > 0.01 && !isMuted) {
-        // Pulse effect: scale 1.0 to 1.25 based on level (more dramatic)
-        const pulseScale = 1 + animationLevel * 0.25;
+      if (audioLevel > 0.05 && !isMuted) {
+        // Pulse effect: scale 1.0 to 1.4 based on level (very dramatic)
+        const pulseScale = 1 + audioLevel * 0.4;
         animatedSize = iconSize * pulseScale;
 
-        // Glow effect: colored shadow based on family color
-        glowColor = color;
-        glowBlur = 6 + animationLevel * 24;  // 6px to 30px blur (more visible)
+        // Glow effect: bright colored shadow
+        // Make glow color brighter/more saturated
+        glowColor = this.brightenColor(color);
+        glowBlur = 8 + audioLevel * 40;  // 8px to 48px blur (very visible)
       }
 
       // Draw the instrument icon (handles its own shadow, fill, stroke)
@@ -1781,6 +1776,33 @@ export class StageCanvas {
     const nr = Math.round(r + (gray - r) * amount);
     const ng = Math.round(g + (gray - g) * amount);
     const nb = Math.round(b + (gray - b) * amount);
+    return `rgb(${nr}, ${ng}, ${nb})`;
+  }
+
+  /**
+   * Brighten a color for glow effects (increase saturation and lightness)
+   */
+  brightenColor(hex) {
+    // Handle both hex and rgb formats
+    let r, g, b;
+    if (hex.startsWith('#')) {
+      r = parseInt(hex.slice(1, 3), 16);
+      g = parseInt(hex.slice(3, 5), 16);
+      b = parseInt(hex.slice(5, 7), 16);
+    } else if (hex.startsWith('rgb')) {
+      const match = hex.match(/(\d+)/g);
+      if (match) [r, g, b] = match.map(Number);
+      else return hex;
+    } else {
+      return hex;
+    }
+
+    // Increase brightness and saturation
+    const factor = 1.4;
+    const nr = Math.min(255, Math.round(r * factor));
+    const ng = Math.min(255, Math.round(g * factor));
+    const nb = Math.min(255, Math.round(b * factor));
+
     return `rgb(${nr}, ${ng}, ${nb})`;
   }
 

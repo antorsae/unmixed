@@ -1815,9 +1815,10 @@ function updateTimeDisplay(currentTime, duration) {
 }
 
 /**
- * Handle playback end
+ * Handle playback end (called when audio reaches end naturally)
  */
 function handlePlaybackEnd() {
+  stageCanvas.stopAnimationLoop();
   updatePlayButton(false);
 }
 
