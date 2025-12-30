@@ -1419,7 +1419,8 @@ function initNoiseGateWorker() {
         }
         return audioBuffer;
       });
-      resolve(outputBuffers);
+      // Return with metadata for consistency with error path
+      resolve({ buffers: outputBuffers, skipped: false });
     } else {
       // Single buffer response (original behavior)
       const numChannels = outputData.length;
@@ -1490,8 +1491,8 @@ function applyNoiseGateMultiAsync(audioBuffers, options = {}) {
     for (let i = 1; i < audioBuffers.length; i++) {
       if (audioBuffers[i].sampleRate !== sampleRate) {
         console.error(`Noise gate: sample rate mismatch - buffer ${i} has ${audioBuffers[i].sampleRate}Hz vs expected ${sampleRate}Hz. Skipping noise gate.`);
-        // Return original buffers unprocessed rather than corrupting audio
-        resolve(audioBuffers);
+        // Return original buffers unprocessed with skipped flag
+        resolve({ buffers: audioBuffers, skipped: true, reason: 'sample_rate_mismatch' });
         return;
       }
     }
@@ -1559,25 +1560,62 @@ async function applyNoiseGateToAllTracks() {
     setStatus(`Applying noise gate... (${i + 1}/${trackIds.length})`, 'info');
 
     // Check if track has directivity buffers that need shared envelope
-    // Note: originalAlternateBuffers contains ALL mics including primary (no double-counting)
+    // Filter to only directivity pair (front/bell) to avoid unrelated mic noise affecting gate
+    const primaryMicPos = track.primaryMicPosition || '6';
+    const bellMicPos = '8';
     if (track.originalAlternateBuffers && track.originalAlternateBuffers.size > 1) {
-      // Use alternateBuffers directly - contains ALL mics
-      const bufferEntries = [...track.originalAlternateBuffers.entries()];
-      const allBuffers = bufferEntries.map(([_, buf]) => buf);
+      // Filter to only the directivity pair (primary mic + bell mic 8)
+      const directivityEntries = [...track.originalAlternateBuffers.entries()]
+        .filter(([micPos, _]) => micPos === primaryMicPos || micPos === bellMicPos);
 
-      // Process all buffers with unified envelope
-      const processedBuffers = await applyNoiseGateMultiAsync(allBuffers, {
-        thresholdDb: state.noiseGateThreshold,
-      });
+      // Only use shared envelope if we have both mics of the directivity pair
+      if (directivityEntries.length > 1) {
+        const directivityBuffers = directivityEntries.map(([_, buf]) => buf);
 
-      // Store all processed buffers back
-      track.alternateBuffers = new Map();
-      bufferEntries.forEach(([micPos, _], idx) => {
-        track.alternateBuffers.set(micPos, processedBuffers[idx]);
-      });
+        // Process directivity pair with unified envelope
+        const result = await applyNoiseGateMultiAsync(directivityBuffers, {
+          thresholdDb: state.noiseGateThreshold,
+        });
+
+        if (result.skipped) {
+          console.warn(`Noise gate skipped for track due to ${result.reason}`);
+          // Skip gating for all mics to keep envelopes consistent
+          track.alternateBuffers = new Map(track.originalAlternateBuffers);
+          track.audioBuffer = track.alternateBuffers.get(primaryMicPos) || track.originalBuffer;
+          audioEngine.updateTrackBuffer(id, track.audioBuffer);
+          audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+          continue;
+        }
+        const processedBuffers = result.buffers;
+
+        // Store processed directivity buffers back
+        track.alternateBuffers = new Map();
+        directivityEntries.forEach(([micPos, _], idx) => {
+          track.alternateBuffers.set(micPos, processedBuffers[idx]);
+        });
+
+        // Copy any non-directivity mics unprocessed (or process individually)
+        for (const [micPos, buf] of track.originalAlternateBuffers.entries()) {
+          if (!track.alternateBuffers.has(micPos)) {
+            // Process non-directivity mics individually
+            const processedBuf = await applyNoiseGateAsync(buf, {
+              thresholdDb: state.noiseGateThreshold,
+            });
+            track.alternateBuffers.set(micPos, processedBuf);
+          }
+        }
+      } else {
+        // Only one mic from directivity pair - process all individually
+        track.alternateBuffers = new Map();
+        for (const [micPos, buf] of track.originalAlternateBuffers.entries()) {
+          const processedBuf = await applyNoiseGateAsync(buf, {
+            thresholdDb: state.noiseGateThreshold,
+          });
+          track.alternateBuffers.set(micPos, processedBuf);
+        }
+      }
 
       // Update main buffer to the primary mic's processed version
-      const primaryMicPos = track.primaryMicPosition || '6';
       track.audioBuffer = track.alternateBuffers.get(primaryMicPos);
       audioEngine.updateTrackBuffer(id, track.audioBuffer);
       audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
@@ -1625,28 +1663,70 @@ async function reprocessTracksWithNoiseGate() {
 
     if (state.noiseGateEnabled) {
       // Check if track has directivity buffers that need shared envelope
-      // Note: originalAlternateBuffers contains ALL mics including primary (no double-counting)
+      // Filter to only directivity pair (front/bell) to avoid unrelated mic noise affecting gate
+      const primaryMicPos = track.primaryMicPosition || '6';
+      const bellMicPos = '8';
       if (track.originalAlternateBuffers && track.originalAlternateBuffers.size > 1) {
-        // Use alternateBuffers directly - contains ALL mics
-        const bufferEntries = [...track.originalAlternateBuffers.entries()];
-        const allBuffers = bufferEntries.map(([_, buf]) => buf);
+        // Filter to only the directivity pair (primary mic + bell mic 8)
+        const directivityEntries = [...track.originalAlternateBuffers.entries()]
+          .filter(([micPos, _]) => micPos === primaryMicPos || micPos === bellMicPos);
 
-        // Process all buffers with unified envelope
-        const processedBuffers = await applyNoiseGateMultiAsync(allBuffers, {
-          thresholdDb: state.noiseGateThreshold,
-        });
+        // Only use shared envelope if we have both mics of the directivity pair
+        if (directivityEntries.length > 1) {
+          const directivityBuffers = directivityEntries.map(([_, buf]) => buf);
 
-        // Check again after async operation
-        if (thisGeneration !== noiseGateGeneration) return;
+          // Process directivity pair with unified envelope
+          const result = await applyNoiseGateMultiAsync(directivityBuffers, {
+            thresholdDb: state.noiseGateThreshold,
+          });
 
-        // Store all processed buffers back
-        track.alternateBuffers = new Map();
-        bufferEntries.forEach(([micPos, _], idx) => {
-          track.alternateBuffers.set(micPos, processedBuffers[idx]);
-        });
+          if (result.skipped) {
+            console.warn(`Noise gate skipped for track ${id} during reprocess due to ${result.reason}`);
+            if (thisGeneration !== noiseGateGeneration) return;
+            // Skip gating for all mics to keep envelopes consistent
+            track.alternateBuffers = new Map();
+            for (const [micPos, origBuf] of track.originalAlternateBuffers.entries()) {
+              track.alternateBuffers.set(micPos, copyAudioBuffer(origBuf));
+            }
+            track.audioBuffer = track.alternateBuffers.get(primaryMicPos) || track.originalBuffer;
+            audioEngine.updateTrackBuffer(id, track.audioBuffer);
+            audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+            continue;
+          }
+          const processedBuffers = result.buffers;
+
+          // Check again after async operation
+          if (thisGeneration !== noiseGateGeneration) return;
+
+          // Store processed directivity buffers back
+          track.alternateBuffers = new Map();
+          directivityEntries.forEach(([micPos, _], idx) => {
+            track.alternateBuffers.set(micPos, processedBuffers[idx]);
+          });
+
+          // Process any non-directivity mics individually
+          for (const [micPos, buf] of track.originalAlternateBuffers.entries()) {
+            if (!track.alternateBuffers.has(micPos)) {
+              const processedBuf = await applyNoiseGateAsync(buf, {
+                thresholdDb: state.noiseGateThreshold,
+              });
+              if (thisGeneration !== noiseGateGeneration) return;
+              track.alternateBuffers.set(micPos, processedBuf);
+            }
+          }
+        } else {
+          // Only one mic from directivity pair - process all individually
+          track.alternateBuffers = new Map();
+          for (const [micPos, buf] of track.originalAlternateBuffers.entries()) {
+            const processedBuf = await applyNoiseGateAsync(buf, {
+              thresholdDb: state.noiseGateThreshold,
+            });
+            if (thisGeneration !== noiseGateGeneration) return;
+            track.alternateBuffers.set(micPos, processedBuf);
+          }
+        }
 
         // Update main buffer to the primary mic's processed version
-        const primaryMicPos = track.primaryMicPosition || '6';
         track.audioBuffer = track.alternateBuffers.get(primaryMicPos);
         audioEngine.updateTrackBuffer(id, track.audioBuffer);
         audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
@@ -1890,7 +1970,7 @@ async function restoreSession() {
   state.groundReflectionEnabled = session.groundReflectionEnabled ?? false;
   state.groundReflectionModel = session.groundReflectionModel ?? state.groundReflectionModel;
   state.noiseGateEnabled = session.noiseGateEnabled ?? false;
-  state.noiseGateThreshold = session.noiseGateThreshold ?? -48;
+  state.noiseGateThreshold = session.noiseGateThreshold ?? -70;
   state.showPolarPatterns = session.showPolarPatterns ?? true;
   // Restore mic config if available, otherwise use default
   if (session.micConfig) {

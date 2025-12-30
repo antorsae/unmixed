@@ -37,41 +37,90 @@ export function calculatePolarGain(patternType, theta) {
 
 /**
  * Calculate the angle from a source to a microphone, accounting for mic orientation
+ * Uses 3D geometry when heights are provided for consistency with ground reflections.
  *
  * @param {Object} sourcePos - {x, y} source position in meters
  * @param {Object} micPos - {x, y} mic position in meters
  * @param {number} micAngle - Mic axis angle in DEGREES (0 = facing toward stage/+Y)
+ * @param {number} sourceHeight - Height of source above ground (optional)
+ * @param {number} micHeight - Height of mic above ground (optional)
  * @returns {number} Angle in radians (0 = on-axis)
  */
-export function calculateIncidenceAngle(sourcePos, micPos, micAngle) {
-  // Direction vector from mic to source
+export function calculateIncidenceAngle(sourcePos, micPos, micAngle, sourceHeight = null, micHeight = null) {
+  // Direction vector from mic to source (3D if heights provided)
   const dx = sourcePos.x - micPos.x;
   const dy = sourcePos.y - micPos.y;
+  const dz = (sourceHeight !== null && micHeight !== null) ? (sourceHeight - micHeight) : 0;
 
-  // Handle case where source is at mic position
-  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (dist < 0.001) {
     return 0; // On-axis by definition
   }
 
-  // Angle from mic to source in standard math convention
-  // atan2(y, x) gives angle from +X axis, counter-clockwise positive
-  const angleToSource = Math.atan2(dy, dx);
-
-  // Mic axis direction:
+  // Mic axis direction (horizontal in 3D)
   // micAngle = 0 means facing +Y (toward stage)
-  // micAngle = -45 means facing between +Y and -X (left mic in XY)
-  // micAngle = +45 means facing between +Y and +X (right mic in XY)
-  // Convert to atan2 convention: +Y axis is 90° in atan2
   const micAxisRad = (90 - micAngle) * Math.PI / 180;
+  const axisX = Math.cos(micAxisRad);
+  const axisY = Math.sin(micAxisRad);
+  const axisZ = 0;
 
-  // Incidence angle = difference between source direction and mic axis
-  let incidence = angleToSource - micAxisRad;
+  const cosTheta = (dx * axisX + dy * axisY + dz * axisZ) / dist;
+  const clamped = Math.max(-1, Math.min(1, cosTheta));
+  return Math.acos(clamped);
+}
 
-  // Normalize to [-PI, PI]
-  while (incidence > Math.PI) incidence -= 2 * Math.PI;
-  while (incidence < -Math.PI) incidence += 2 * Math.PI;
+/**
+ * Calculate polar pattern gain for ground reflection (mirror source)
+ * Accounts for 3D incidence angle from reflected sound path
+ *
+ * @param {string} patternType - Key from POLAR_PATTERNS
+ * @param {Object} sourcePos - {x, y} source position in meters
+ * @param {Object} micPos - {x, y} mic position in meters
+ * @param {number} micAngle - Mic axis angle in DEGREES (0 = facing toward stage/+Y)
+ * @param {number} sourceHeight - Height of source above ground
+ * @param {number} micHeight - Height of mic above ground
+ * @returns {number} Polar gain for the mirror source angle
+ */
+export function calculateGroundReflectionPolarGain(patternType, sourcePos, micPos, micAngle, sourceHeight, micHeight) {
+  const pattern = POLAR_PATTERNS[patternType];
+  if (!pattern) {
+    return 1.0; // Default to omni if unknown
+  }
 
-  return incidence;
+  // Mirror source position (reflected across ground plane z=0)
+  // mirrorZ = -sourceHeight (below ground)
+  const mirrorZ = -sourceHeight;
+
+  // 3D direction vector from mic to mirror source
+  const dx = sourcePos.x - micPos.x;
+  const dy = sourcePos.y - micPos.y;
+  const dz = mirrorZ - micHeight;  // Negative (mirror source is below mic)
+
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (dist < 0.001) {
+    return 1.0; // Source at mic position
+  }
+
+  // Normalize direction to mirror source
+  const dirX = dx / dist;
+  const dirY = dy / dist;
+  const dirZ = dz / dist;
+
+  // Mic axis direction in 3D (horizontal, based on mic angle)
+  // micAngle = 0 means facing +Y (toward stage)
+  // Mic axis is horizontal (z = 0)
+  const micAxisRad = (90 - micAngle) * Math.PI / 180;
+  const axisX = Math.cos(micAxisRad);
+  const axisY = Math.sin(micAxisRad);
+  const axisZ = 0;  // Mic axis is horizontal
+
+  // 3D dot product gives cos(incidence angle)
+  const cosTheta = dirX * axisX + dirY * axisY + dirZ * axisZ;
+  const clamped = Math.max(-1, Math.min(1, cosTheta));
+
+  // Apply polar pattern formula: G = alpha + (1 - alpha) * cos(theta)
+  const alpha = pattern.alpha;
+  return alpha + (1 - alpha) * clamped;
 }
 
 /**
@@ -135,7 +184,7 @@ export function calculateMicrophoneResponse(sourcePos, mic, micBasePos, options 
   const distanceGain = Math.min(1.0, refDistance / effectiveDist);
 
   // Polar pattern gain based on incidence angle
-  const incidenceAngle = calculateIncidenceAngle(sourcePos, micPos, mic.angle || 0);
+  const incidenceAngle = calculateIncidenceAngle(sourcePos, micPos, mic.angle || 0, sourceHeight, micHeight);
   const patternGain = calculatePolarGain(mic.pattern || 'omni', incidenceAngle);
 
   // Level adjustment (dB to linear)

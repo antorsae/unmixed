@@ -70,13 +70,33 @@ The interactive stage canvas provides intuitive control:
 
 ### Noise Gate
 
-The Aalto anechoic recordings were made with uniform gain settings across all instruments, which can result in audible noise floor in quieter instruments. The built-in noise gate addresses this:
+The Aalto anechoic recordings were made with uniform gain settings across all instruments, preserving natural orchestral dynamics but resulting in very quiet levels for softer instruments. The built-in noise gate addresses background noise while preserving these natural dynamics:
 
 - **Automatic Enabling**: Noise gate is automatically enabled when loading Aalto profiles
-- **Adjustable Threshold**: -60dB to -30dB range (default -48dB)
-- **Professional Parameters**: 2ms attack, 30ms hold, 50ms release for musical gating
+- **Adjustable Threshold**: -75dB to -55dB range (default -70dB)
+- **Optimized for Aalto Recordings**: Threshold calibrated via analysis of all four symphonic works
+- **Shared Envelope Processing**: Directivity buffers (front/bell mics) use unified envelope for coherent imaging
+- **Professional Parameters**: 5ms attack, 100ms hold, 80ms release for musical gating
 - **Real-Time Re-processing**: Changing threshold re-processes all tracks immediately
 - **Original Buffer Preservation**: Original audio is preserved for threshold adjustments
+
+#### Aalto Recording Level Analysis
+
+The threshold was determined by analyzing noise floor (silence) vs RMS peak (playing) across all instruments in the four symphonic works:
+
+| Recording | Tracks | Noise Floor Range | RMS Peak Range | Quietest Signal |
+|-----------|-------:|------------------:|---------------:|----------------:|
+| **Beethoven** | 25 | -77 to -128 dB | -24 to -47 dB | -46.9 dB (Bassoon 2) |
+| **Bruckner** | 58 | -75 to -114 dB | -20 to -55 dB | -54.9 dB (Violin 1b) |
+| **Mahler** | 50 | -75 to -101 dB | -18 to -44 dB | -44.1 dB (Violin 1b) |
+| **Mozart** | 14 | -77 to -132 dB | -31 to -50 dB | -50.0 dB (Violin 2) |
+
+**Key findings:**
+- Highest noise floor across all recordings: **-75.0 dB** (Bruckner bassoons)
+- Quietest musical signal (RMS peak): **-54.9 dB** (Bruckner violin 1b)
+- Gap between noise and signal: **20.1 dB**
+
+The default threshold of **-70 dB** sits safely in this gap—15 dB above the highest noise floor and 15 dB below the quietest signal—ensuring no musical content is gated while still suppressing background noise during rests
 
 ### Reverb System
 

@@ -15,11 +15,21 @@ import {
 import {
   calculateStereoResponse,
   calculatePolarGain,
+  calculateGroundReflectionPolarGain,
   getPolarPatternPoints,
 } from './microphone-math.js';
 
 // Physical constants
 const SPEED_OF_SOUND = 343; // m/s at 20°C
+const PATTERN_GAIN_EPS = 1e-4;
+
+function safePatternGain(gain) {
+  if (!Number.isFinite(gain)) return PATTERN_GAIN_EPS;
+  if (Math.abs(gain) < PATTERN_GAIN_EPS) {
+    return gain < 0 ? -PATTERN_GAIN_EPS : PATTERN_GAIN_EPS;
+  }
+  return gain;
+}
 
 // Air absorption coefficients in dB per 100 meters at different frequencies
 // Based on ISO 9613-1 at 20°C, 50% relative humidity
@@ -96,6 +106,7 @@ export class AudioEngine {
   /**
    * Update legacy mic positions from current micConfig
    * Used for backward compatibility with existing code
+   * Also stores mic pattern and angle for ground reflection calculations
    */
   _updateLegacyMicPositions() {
     const layoutConfig = applyTechniqueLayout({ ...this.micConfig });
@@ -108,14 +119,22 @@ export class AudioEngine {
 
     if (micL) {
       this.micL = { x: micL.offsetX, y: baseY + (micL.offsetY || 0) };
+      this.micLPattern = micL.pattern || 'omni';
+      this.micLAngle = micL.angle || 0;
     }
     if (micR) {
       this.micR = { x: micR.offsetX, y: baseY + (micR.offsetY || 0) };
+      this.micRPattern = micR.pattern || 'omni';
+      this.micRAngle = micR.angle || 0;
     }
     if (micC) {
       this.micC = { x: micC.offsetX, y: baseY + (micC.offsetY || 0) };
+      this.micCPattern = micC.pattern || 'omni';
+      this.micCAngle = micC.angle || 0;
     } else {
       this.micC = null;
+      this.micCPattern = null;
+      this.micCAngle = null;
     }
   }
 
@@ -468,6 +487,7 @@ export class AudioEngine {
       }
     }
 
+    this._updateLegacyMicPositions();
     this._updateAllTracks();
   }
 
@@ -645,6 +665,9 @@ export class AudioEngine {
     const ampL = hasCenter && responseL ? responseL.gain : stereoResponse.left.gain;
     const ampR = hasCenter && responseR ? responseR.gain : stereoResponse.right.gain;
     const ampC = responseC ? responseC.gain : 0;
+    const directPatternL = responseL?.patternGain ?? 1;
+    const directPatternR = responseR?.patternGain ?? 1;
+    const directPatternC = responseC?.patternGain ?? 1;
 
     // Track distances for air absorption (from mic responses)
     const effectiveDistL = responseL?.distance || 3;
@@ -751,10 +774,32 @@ export class AudioEngine {
         nodes.groundDelayL.delayTime.setTargetAtTime(baseDelay + itdL + groundExtraL, now, rampTime);
         nodes.groundDelayR.delayTime.setTargetAtTime(baseDelay + itdR + groundExtraR, now, rampTime);
 
-        // Convert from direct-path attenuation (1/effectiveDist) to ground-path (1/groundDist)
-        // Input signal already has distance + gain applied, so no extra gainMultiplier
-        const baseAmpL = Math.min(1.0, effectiveDistL / groundDistL);
-        const baseAmpR = Math.min(1.0, effectiveDistR / groundDistR);
+        // Convert from direct-path attenuation to ground-path using consistent gain formula
+        // Direct path uses: min(1, refDist/effectiveDist) - clamped at refDist
+        // Ground path needs: min(1, refDist/groundDist)
+        // Ratio = groundGain / directGain handles the clamping correctly
+        const refDist = 3; // Must match microphone-math.js refDistance
+        const directGainL = Math.min(1.0, refDist / effectiveDistL);
+        const directGainR = Math.min(1.0, refDist / effectiveDistR);
+        const groundGainL = Math.min(1.0, refDist / groundDistL);
+        const groundGainR = Math.min(1.0, refDist / groundDistR);
+
+        // Apply polar pattern gain for ground reflection (mirror source angle)
+        // Reflected sound comes from below ground - different incidence angle than direct
+        const groundPolarL = calculateGroundReflectionPolarGain(
+          this.micLPattern, sourcePosMeters, this.micL, this.micLAngle,
+          STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
+        );
+        const groundPolarR = calculateGroundReflectionPolarGain(
+          this.micRPattern, sourcePosMeters, this.micR, this.micRAngle,
+          STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
+        );
+
+        // Combined amplitude: distance ratio * reflection polar ratio
+        const patternRatioL = groundPolarL / safePatternGain(directPatternL);
+        const patternRatioR = groundPolarR / safePatternGain(directPatternR);
+        const baseAmpL = (groundGainL / directGainL) * patternRatioL;
+        const baseAmpR = (groundGainR / directGainR) * patternRatioR;
         nodes.groundBaseGainL.gain.setTargetAtTime(baseAmpL, now, rampTime);
         nodes.groundBaseGainR.gain.setTargetAtTime(baseAmpR, now, rampTime);
 
@@ -788,7 +833,14 @@ export class AudioEngine {
           );
           const groundTimeC = groundDistC / SPEED_OF_SOUND;
           const groundExtraC = Math.max(0, groundTimeC - delayC);
-          const baseAmpC = Math.min(1.0, effectiveDistC / groundDistC);
+          const directGainC = Math.min(1.0, refDist / effectiveDistC);
+          const groundGainC = Math.min(1.0, refDist / groundDistC);
+          const groundPolarC = calculateGroundReflectionPolarGain(
+            this.micCPattern, sourcePosMeters, this.micC, this.micCAngle,
+            STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
+          );
+          const patternRatioC = groundPolarC / safePatternGain(directPatternC);
+          const baseAmpC = (groundGainC / directGainC) * patternRatioC;
 
           nodes.groundDelayC.delayTime.setTargetAtTime(baseDelay + itdC + groundExtraC, now, rampTime);
           nodes.groundBaseGainC.gain.setTargetAtTime(baseAmpC, now, rampTime);
@@ -1559,6 +1611,9 @@ export class AudioEngine {
       const ampL = hasCenter && responseL ? responseL.gain : stereoResponse.left.gain;
       const ampR = hasCenter && responseR ? responseR.gain : stereoResponse.right.gain;
       const ampC = responseC ? responseC.gain : 0;
+      const directPatternL = responseL?.patternGain ?? 1;
+      const directPatternR = responseR?.patternGain ?? 1;
+      const directPatternC = responseC?.patternGain ?? 1;
 
       // Use stereo response delays
       const timeL = responseL?.delay ?? stereoResponse.left.delay;
@@ -1733,10 +1788,19 @@ export class AudioEngine {
         const lowGain = groundModel.lowGain * STAGE_CONFIG.groundReflectionCoeff;
         const highGain = groundModel.highGain * STAGE_CONFIG.groundReflectionCoeff;
         const crossFreq = groundModel.crossoverHz;
+        const refDist = 3; // Must match microphone-math.js refDistance
 
-        // Convert from direct-path attenuation (1/distL) to ground-path (1/groundDistL)
-        // Input signal already has distance + gain applied, so no extra track.gain
-        const baseAmpL = Math.min(1.0, distL / groundDistL);
+        // Convert from direct-path attenuation to ground-path using consistent gain formula
+        // Ratio = groundGain / directGain handles clamping correctly for sources inside refDist
+        const directGainL = Math.min(1.0, refDist / distL);
+        const groundGainL = Math.min(1.0, refDist / groundDistL);
+        // Apply polar pattern gain for ground reflection (mirror source angle)
+        const groundPolarL = calculateGroundReflectionPolarGain(
+          this.micLPattern, sourcePos, this.micL, this.micLAngle,
+          STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
+        );
+        const patternRatioL = groundPolarL / safePatternGain(directPatternL);
+        const baseAmpL = (groundGainL / directGainL) * patternRatioL;
         const groundBaseGainL = offlineContext.createGain();
         groundBaseGainL.gain.value = baseAmpL;
         const groundDelayL = offlineContext.createDelay(0.1);
@@ -1776,7 +1840,14 @@ export class AudioEngine {
         groundHighGainL.connect(groundSumL);
         groundSumL.connect(stereoMerger, 0, 0);
 
-        const baseAmpR = Math.min(1.0, distR / groundDistR);
+        const directGainR = Math.min(1.0, refDist / distR);
+        const groundGainR = Math.min(1.0, refDist / groundDistR);
+        const groundPolarR = calculateGroundReflectionPolarGain(
+          this.micRPattern, sourcePos, this.micR, this.micRAngle,
+          STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
+        );
+        const patternRatioR = groundPolarR / safePatternGain(directPatternR);
+        const baseAmpR = (groundGainR / directGainR) * patternRatioR;
         const groundBaseGainR = offlineContext.createGain();
         groundBaseGainR.gain.value = baseAmpR;
         const groundDelayR = offlineContext.createDelay(0.1);
@@ -1822,7 +1893,14 @@ export class AudioEngine {
           const groundTimeC = groundDistC / SPEED_OF_SOUND;
           const groundExtraC = Math.max(0, groundTimeC - timeC);
 
-          const baseAmpC = Math.min(1.0, distC / groundDistC);
+          const directGainC = Math.min(1.0, refDist / distC);
+          const groundGainC = Math.min(1.0, refDist / groundDistC);
+          const groundPolarC = calculateGroundReflectionPolarGain(
+            this.micCPattern, sourcePos, this.micC, this.micCAngle,
+            STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
+          );
+          const patternRatioC = groundPolarC / safePatternGain(directPatternC);
+          const baseAmpC = (groundGainC / directGainC) * patternRatioC;
           const groundBaseGainC = offlineContext.createGain();
           groundBaseGainC.gain.value = baseAmpC;
           const groundDelayC = offlineContext.createDelay(0.1);

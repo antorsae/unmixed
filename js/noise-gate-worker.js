@@ -232,7 +232,7 @@ function handleSingleBuffer(data) {
   const { channelData, sampleRate, options, taskId } = data;
 
   const {
-    thresholdDb = -48,
+    thresholdDb = -70,
     attackMs = 5,
     holdMs = 100,
     releaseMs = 80,
@@ -282,7 +282,7 @@ function handleMultiBuffer(data) {
   // buffers = [{channels: Float32Array[]}, ...]
 
   const {
-    thresholdDb = -48,
+    thresholdDb = -70,
     attackMs = 5,
     holdMs = 100,
     releaseMs = 80,
