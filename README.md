@@ -1,4 +1,4 @@
-# Orchestral Anechoic Stereo Mixer
+# Orpheus Mixer
 
 A web-based audio mixer that simulates the physics of sound propagation in a concert hall environment. Load anechoic (echo-free) symphony orchestra recordings and position instruments on a virtual stage to create realistic stereo mixes.
 
@@ -61,11 +61,20 @@ When multiple microphone positions are available for an instrument (e.g., front 
 
 The interactive stage canvas provides intuitive control:
 
-- **Drag to Position**: Move instrument circles to reposition them on the stage
-- **Circle Size = Gain**: The radius of each circle represents the instrument's gain level
-- **Edge Drag to Resize**: Drag the edge of a circle to adjust gain
-- **Mute/Solo Buttons**: Quick M/S toggles on each instrument circle
-- **Color-Coded Families**: Strings (brown), Woodwinds (olive), Brass (gold), Percussion (blue), Keyboard (purple), Voice (red)
+- **Emoji Icons**: Each instrument family has a distinctive emoji icon:
+  - 🎻 Strings (violin, viola, cello, bass)
+  - 🎺 Trumpet, Trombone | 📯 Horn, Tuba
+  - 🪈 Flute | 🎷 Oboe, Clarinet, Bassoon
+  - 🥁 Timpani | 🪘 Percussion
+  - 👩‍🎤 Soprano voice
+- **Real-Time Animation**: Icons pulse and glow when instruments are actively playing, with intensity proportional to audio level
+- **Smart Density Scaling**: Icon sizes automatically adjust based on track count to prevent overlap
+- **Drag to Position**: Move instrument icons to reposition them on the stage
+- **Icon Size = Gain**: The size of each icon represents the instrument's gain level
+- **Scroll Wheel Volume**: Hover over an icon and scroll to adjust gain
+- **Double-Click Reset**: Double-click an icon to reset gain to 1.0
+- **Mute/Solo on Hover**: M/S buttons appear when hovering over an instrument
+- **Color-Coded Families**: Strings (brown), Woodwinds (olive), Brass (gold), Percussion (blue), Voice (red)
 - **Auto-Prefix Stripping**: Common prefixes like "Mozart " are automatically removed for cleaner display
 
 ### Noise Gate
@@ -177,6 +186,8 @@ Source → Directivity Blend → Polar Pattern Gain → ITD Delay → Air Absorp
                                                       Convolution Reverb
                                                               ↓
                                                    Master Gain → Limiter → Output
+
+Per-Track: Mixer → AnalyserNode (for real-time level visualization)
 ```
 
 For Decca Tree, center mic has independent signal path with -3dB equal-power pan to L/R.
