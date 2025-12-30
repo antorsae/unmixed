@@ -1486,10 +1486,13 @@ function applyNoiseGateMultiAsync(audioBuffers, options = {}) {
     // All buffers must have same sample rate
     const sampleRate = audioBuffers[0].sampleRate;
 
-    // Validate all buffers have same sample rate
+    // Validate all buffers have same sample rate - reject mismatches
     for (let i = 1; i < audioBuffers.length; i++) {
       if (audioBuffers[i].sampleRate !== sampleRate) {
-        console.warn(`Noise gate: sample rate mismatch - buffer ${i} has ${audioBuffers[i].sampleRate}Hz vs expected ${sampleRate}Hz`);
+        console.error(`Noise gate: sample rate mismatch - buffer ${i} has ${audioBuffers[i].sampleRate}Hz vs expected ${sampleRate}Hz. Skipping noise gate.`);
+        // Return original buffers unprocessed rather than corrupting audio
+        resolve(audioBuffers);
+        return;
       }
     }
 

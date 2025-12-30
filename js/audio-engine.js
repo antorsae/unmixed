@@ -653,7 +653,6 @@ export class AudioEngine {
 
     // Apply track gain and mute/solo
     const hasSolo = Array.from(this.tracks.values()).some(t => t.solo);
-    const groundModel = this.groundReflectionEnabled ? this.getGroundReflectionModelConfig() : null;
     let gainMultiplier = track.gain;
     if (track.muted || (hasSolo && !track.solo)) {
       gainMultiplier = 0;
@@ -744,9 +743,6 @@ export class AudioEngine {
         const groundTimeL = groundDistL / SPEED_OF_SOUND;
         const groundTimeR = groundDistR / SPEED_OF_SOUND;
 
-        // Reference distance for amplitude calculation
-        const refDist = 3;
-
         // Ground reflection delay must include baseDelay + ITD so it arrives AFTER direct sound
         // Direct sound uses: baseDelay + itdL/itdR
         // Ground reflection is extra path time (groundTime - directTime) on top of that
@@ -755,10 +751,26 @@ export class AudioEngine {
         nodes.groundDelayL.delayTime.setTargetAtTime(baseDelay + itdL + groundExtraL, now, rampTime);
         nodes.groundDelayR.delayTime.setTargetAtTime(baseDelay + itdR + groundExtraR, now, rampTime);
 
-        const baseAmpL = Math.min(1.0, refDist / groundDistL) * gainMultiplier;
-        const baseAmpR = Math.min(1.0, refDist / groundDistR) * gainMultiplier;
+        // Convert from direct-path attenuation (1/effectiveDist) to ground-path (1/groundDist)
+        // Input signal already has distance + gain applied, so no extra gainMultiplier
+        const baseAmpL = Math.min(1.0, effectiveDistL / groundDistL);
+        const baseAmpR = Math.min(1.0, effectiveDistR / groundDistR);
         nodes.groundBaseGainL.gain.setTargetAtTime(baseAmpL, now, rampTime);
         nodes.groundBaseGainR.gain.setTargetAtTime(baseAmpR, now, rampTime);
+
+        // Update air absorption for ground reflection (longer path = more HF loss)
+        if (nodes.groundAirAbsorbL) {
+          const groundAbsorptionL = this.calculateAirAbsorption(groundDistL);
+          nodes.groundAirAbsorbL.forEach((filter, i) => {
+            filter.gain.setTargetAtTime(groundAbsorptionL[i].gainDb, now, rampTime);
+          });
+        }
+        if (nodes.groundAirAbsorbR) {
+          const groundAbsorptionR = this.calculateAirAbsorption(groundDistR);
+          nodes.groundAirAbsorbR.forEach((filter, i) => {
+            filter.gain.setTargetAtTime(groundAbsorptionR[i].gainDb, now, rampTime);
+          });
+        }
 
         nodes.groundLowGainL.gain.setTargetAtTime(lowGain, now, rampTime);
         nodes.groundHighGainL.gain.setTargetAtTime(highGain, now, rampTime);
@@ -776,10 +788,16 @@ export class AudioEngine {
           );
           const groundTimeC = groundDistC / SPEED_OF_SOUND;
           const groundExtraC = Math.max(0, groundTimeC - delayC);
-          const baseAmpC = Math.min(1.0, refDist / groundDistC) * gainMultiplier;
+          const baseAmpC = Math.min(1.0, effectiveDistC / groundDistC);
 
           nodes.groundDelayC.delayTime.setTargetAtTime(baseDelay + itdC + groundExtraC, now, rampTime);
           nodes.groundBaseGainC.gain.setTargetAtTime(baseAmpC, now, rampTime);
+          if (nodes.groundAirAbsorbC) {
+            const groundAbsorptionC = this.calculateAirAbsorption(groundDistC);
+            nodes.groundAirAbsorbC.forEach((filter, i) => {
+              filter.gain.setTargetAtTime(groundAbsorptionC[i].gainDb, now, rampTime);
+            });
+          }
           nodes.groundLowGainC.gain.setTargetAtTime(lowGain, now, rampTime);
           nodes.groundHighGainC.gain.setTargetAtTime(highGain, now, rampTime);
           nodes.groundLowFilterC.frequency.setTargetAtTime(crossFreq, now, rampTime);
@@ -1134,15 +1152,16 @@ export class AudioEngine {
     }
 
     // === GROUND REFLECTION (optional) ===
-    let groundBaseGainL, groundDelayL, groundLowFilterL, groundHighFilterL, groundLowGainL, groundHighGainL, groundSumL;
-    let groundBaseGainR, groundDelayR, groundLowFilterR, groundHighFilterR, groundLowGainR, groundHighGainR, groundSumR;
-    let groundBaseGainC, groundDelayC, groundLowFilterC, groundHighFilterC, groundLowGainC, groundHighGainC, groundSumC;
+    let groundBaseGainL, groundDelayL, groundAirAbsorbL, groundLowFilterL, groundHighFilterL, groundLowGainL, groundHighGainL, groundSumL;
+    let groundBaseGainR, groundDelayR, groundAirAbsorbR, groundLowFilterR, groundHighFilterR, groundLowGainR, groundHighGainR, groundSumR;
+    let groundBaseGainC, groundDelayC, groundAirAbsorbC, groundLowFilterC, groundHighFilterC, groundLowGainC, groundHighGainC, groundSumC;
 
     if (this.groundReflectionEnabled) {
       const groundModel = this.getGroundReflectionModelConfig();
 
       groundBaseGainL = this.context.createGain();
       groundDelayL = this.context.createDelay(0.1);
+      groundAirAbsorbL = this.createAirAbsorptionFilterBank(this.context);
       groundLowFilterL = this.context.createBiquadFilter();
       groundLowFilterL.type = 'lowpass';
       groundLowFilterL.frequency.value = groundModel.crossoverHz;
@@ -1157,6 +1176,7 @@ export class AudioEngine {
 
       groundBaseGainR = this.context.createGain();
       groundDelayR = this.context.createDelay(0.1);
+      groundAirAbsorbR = this.createAirAbsorptionFilterBank(this.context);
       groundLowFilterR = this.context.createBiquadFilter();
       groundLowFilterR.type = 'lowpass';
       groundLowFilterR.frequency.value = groundModel.crossoverHz;
@@ -1170,22 +1190,35 @@ export class AudioEngine {
       groundSumR = this.context.createGain();
 
       // Ground reflection uses the mixed signal
+      // Chain: mixer → baseGain → delay → airAbsorb[0..6] → low/high split → sum → output
       mixerL.connect(groundBaseGainL);
       groundBaseGainL.connect(groundDelayL);
-      groundDelayL.connect(groundLowFilterL);
+      // Chain air absorption filters for ground path
+      let prevGroundL = groundDelayL;
+      for (const filter of groundAirAbsorbL) {
+        prevGroundL.connect(filter);
+        prevGroundL = filter;
+      }
+      prevGroundL.connect(groundLowFilterL);
       groundLowFilterL.connect(groundLowGainL);
       groundLowGainL.connect(groundSumL);
-      groundDelayL.connect(groundHighFilterL);
+      prevGroundL.connect(groundHighFilterL);
       groundHighFilterL.connect(groundHighGainL);
       groundHighGainL.connect(groundSumL);
       groundSumL.connect(this.stereoMerger, 0, 0);
 
       mixerR.connect(groundBaseGainR);
       groundBaseGainR.connect(groundDelayR);
-      groundDelayR.connect(groundLowFilterR);
+      // Chain air absorption filters for ground path
+      let prevGroundR = groundDelayR;
+      for (const filter of groundAirAbsorbR) {
+        prevGroundR.connect(filter);
+        prevGroundR = filter;
+      }
+      prevGroundR.connect(groundLowFilterR);
       groundLowFilterR.connect(groundLowGainR);
       groundLowGainR.connect(groundSumR);
-      groundDelayR.connect(groundHighFilterR);
+      prevGroundR.connect(groundHighFilterR);
       groundHighFilterR.connect(groundHighGainR);
       groundHighGainR.connect(groundSumR);
       groundSumR.connect(this.stereoMerger, 0, 1);
@@ -1193,6 +1226,7 @@ export class AudioEngine {
       if (hasCenter && mixerC && centerBus) {
         groundBaseGainC = this.context.createGain();
         groundDelayC = this.context.createDelay(0.1);
+        groundAirAbsorbC = this.createAirAbsorptionFilterBank(this.context);
         groundLowFilterC = this.context.createBiquadFilter();
         groundLowFilterC.type = 'lowpass';
         groundLowFilterC.frequency.value = groundModel.crossoverHz;
@@ -1207,10 +1241,16 @@ export class AudioEngine {
 
         mixerC.connect(groundBaseGainC);
         groundBaseGainC.connect(groundDelayC);
-        groundDelayC.connect(groundLowFilterC);
+        // Chain air absorption filters for ground path
+        let prevGroundC = groundDelayC;
+        for (const filter of groundAirAbsorbC) {
+          prevGroundC.connect(filter);
+          prevGroundC = filter;
+        }
+        prevGroundC.connect(groundLowFilterC);
         groundLowFilterC.connect(groundLowGainC);
         groundLowGainC.connect(groundSumC);
-        groundDelayC.connect(groundHighFilterC);
+        prevGroundC.connect(groundHighFilterC);
         groundHighFilterC.connect(groundHighGainC);
         groundHighGainC.connect(groundSumC);
         groundSumC.connect(centerBus);
@@ -1256,6 +1296,7 @@ export class AudioEngine {
       centerBus,
       groundBaseGainL,
       groundDelayL,
+      groundAirAbsorbL,
       groundLowFilterL,
       groundHighFilterL,
       groundLowGainL,
@@ -1263,6 +1304,7 @@ export class AudioEngine {
       groundSumL,
       groundBaseGainR,
       groundDelayR,
+      groundAirAbsorbR,
       groundLowFilterR,
       groundHighFilterR,
       groundLowGainR,
@@ -1270,6 +1312,7 @@ export class AudioEngine {
       groundSumR,
       groundBaseGainC,
       groundDelayC,
+      groundAirAbsorbC,
       groundLowFilterC,
       groundHighFilterC,
       groundLowGainC,
@@ -1527,9 +1570,6 @@ export class AudioEngine {
       const distR = responseR?.distance || 3;
       const distC = responseC?.distance || 3;
 
-      // Keep refDist for ground reflection calculations
-      const refDist = 3;
-
       // Base delay: preserves depth timing cues (relative to front of stage)
       const refDistance = Math.abs(this.micConfig.micY);
       const refTime = refDistance / SPEED_OF_SOUND;
@@ -1694,7 +1734,9 @@ export class AudioEngine {
         const highGain = groundModel.highGain * STAGE_CONFIG.groundReflectionCoeff;
         const crossFreq = groundModel.crossoverHz;
 
-        const baseAmpL = Math.min(1.0, refDist / groundDistL) * track.gain;
+        // Convert from direct-path attenuation (1/distL) to ground-path (1/groundDistL)
+        // Input signal already has distance + gain applied, so no extra track.gain
+        const baseAmpL = Math.min(1.0, distL / groundDistL);
         const groundBaseGainL = offlineContext.createGain();
         groundBaseGainL.gain.value = baseAmpL;
         const groundDelayL = offlineContext.createDelay(0.1);
@@ -1712,17 +1754,29 @@ export class AudioEngine {
         const groundHighGainL = offlineContext.createGain();
         groundHighGainL.gain.value = highGain;
         const groundSumL = offlineContext.createGain();
+
+        // Air absorption for ground reflection (longer path = more HF loss)
+        const groundAbsorbL = this.createAirAbsorptionFilterBank(offlineContext);
+        const groundAbsorptionL = this.calculateAirAbsorption(groundDistL);
+        groundAbsorbL.forEach((filter, i) => { filter.gain.value = groundAbsorptionL[i].gainDb; });
+
+        // Chain: mixer → baseGain → delay → airAbsorb[0..6] → low/high split → sum → output
         mixerL.connect(groundBaseGainL);
         groundBaseGainL.connect(groundDelayL);
-        groundDelayL.connect(groundLowFilterL);
+        let prevGroundL = groundDelayL;
+        for (const filter of groundAbsorbL) {
+          prevGroundL.connect(filter);
+          prevGroundL = filter;
+        }
+        prevGroundL.connect(groundLowFilterL);
         groundLowFilterL.connect(groundLowGainL);
         groundLowGainL.connect(groundSumL);
-        groundDelayL.connect(groundHighFilterL);
+        prevGroundL.connect(groundHighFilterL);
         groundHighFilterL.connect(groundHighGainL);
         groundHighGainL.connect(groundSumL);
         groundSumL.connect(stereoMerger, 0, 0);
 
-        const baseAmpR = Math.min(1.0, refDist / groundDistR) * track.gain;
+        const baseAmpR = Math.min(1.0, distR / groundDistR);
         const groundBaseGainR = offlineContext.createGain();
         groundBaseGainR.gain.value = baseAmpR;
         const groundDelayR = offlineContext.createDelay(0.1);
@@ -1740,12 +1794,23 @@ export class AudioEngine {
         const groundHighGainR = offlineContext.createGain();
         groundHighGainR.gain.value = highGain;
         const groundSumR = offlineContext.createGain();
+
+        // Air absorption for ground reflection R
+        const groundAbsorbR = this.createAirAbsorptionFilterBank(offlineContext);
+        const groundAbsorptionR = this.calculateAirAbsorption(groundDistR);
+        groundAbsorbR.forEach((filter, i) => { filter.gain.value = groundAbsorptionR[i].gainDb; });
+
         mixerR.connect(groundBaseGainR);
         groundBaseGainR.connect(groundDelayR);
-        groundDelayR.connect(groundLowFilterR);
+        let prevGroundR = groundDelayR;
+        for (const filter of groundAbsorbR) {
+          prevGroundR.connect(filter);
+          prevGroundR = filter;
+        }
+        prevGroundR.connect(groundLowFilterR);
         groundLowFilterR.connect(groundLowGainR);
         groundLowGainR.connect(groundSumR);
-        groundDelayR.connect(groundHighFilterR);
+        prevGroundR.connect(groundHighFilterR);
         groundHighFilterR.connect(groundHighGainR);
         groundHighGainR.connect(groundSumR);
         groundSumR.connect(stereoMerger, 0, 1);
@@ -1757,7 +1822,7 @@ export class AudioEngine {
           const groundTimeC = groundDistC / SPEED_OF_SOUND;
           const groundExtraC = Math.max(0, groundTimeC - timeC);
 
-          const baseAmpC = Math.min(1.0, refDist / groundDistC) * track.gain;
+          const baseAmpC = Math.min(1.0, distC / groundDistC);
           const groundBaseGainC = offlineContext.createGain();
           groundBaseGainC.gain.value = baseAmpC;
           const groundDelayC = offlineContext.createDelay(0.1);
@@ -1776,12 +1841,22 @@ export class AudioEngine {
           groundHighGainC.gain.value = highGain;
           const groundSumC = offlineContext.createGain();
 
+          // Air absorption for ground reflection C
+          const groundAbsorbC = this.createAirAbsorptionFilterBank(offlineContext);
+          const groundAbsorptionC = this.calculateAirAbsorption(groundDistC);
+          groundAbsorbC.forEach((filter, i) => { filter.gain.value = groundAbsorptionC[i].gainDb; });
+
           mixerC.connect(groundBaseGainC);
           groundBaseGainC.connect(groundDelayC);
-          groundDelayC.connect(groundLowFilterC);
+          let prevGroundC = groundDelayC;
+          for (const filter of groundAbsorbC) {
+            prevGroundC.connect(filter);
+            prevGroundC = filter;
+          }
+          prevGroundC.connect(groundLowFilterC);
           groundLowFilterC.connect(groundLowGainC);
           groundLowGainC.connect(groundSumC);
-          groundDelayC.connect(groundHighFilterC);
+          prevGroundC.connect(groundHighFilterC);
           groundHighFilterC.connect(groundHighGainC);
           groundHighGainC.connect(groundSumC);
           groundSumC.connect(centerBus);
