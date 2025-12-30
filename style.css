@@ -646,6 +646,32 @@ button.primary:hover {
   flex-wrap: wrap;
 }
 
+.ground-reflection-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ground-reflection-model select {
+  padding: 6px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #fff4e6;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.ground-reflection-model select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ground-reflection-model select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 #reverb-preset {
   padding: 8px 12px;
   border: 1px solid var(--panel-border);
@@ -678,6 +704,84 @@ button.primary:hover {
   accent-color: var(--accent);
 }
 
+/* Microphone Controls */
+.mic-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  flex-wrap: wrap;
+}
+
+.mic-technique-control,
+.mic-pattern-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mic-technique-control select,
+.mic-pattern-control select {
+  padding: 6px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #fff4e6;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.mic-technique-control select:focus,
+.mic-pattern-control select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.mic-pattern-control select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mic-spacing-control,
+.mic-angle-control,
+.mic-center-depth-control,
+.mic-center-level-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mic-spacing-control input[type="range"],
+.mic-angle-control input[type="range"],
+.mic-center-depth-control input[type="range"],
+.mic-center-level-control input[type="range"] {
+  width: 80px;
+  accent-color: var(--accent);
+}
+
+#mic-spacing-value,
+#mic-angle-value,
+#mic-center-depth-value,
+#mic-center-level-value {
+  min-width: 40px;
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: 12px;
+}
+
+.mic-center-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mic-center-controls.hidden,
+.mic-angle-control.hidden,
+.mic-spacing-control.hidden {
+  display: none;
+}
+
+/* Legacy mic separation (compatibility) */
 .mic-separation-control {
   display: flex;
   align-items: center;

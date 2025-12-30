@@ -2,8 +2,8 @@
 
 import { PROFILES, FAMILY_ORDER, FAMILY_COLORS } from './positions.js';
 import { parseTrackFilename, generateTrackId, sortTracksByFamily } from './track-parser.js';
-import { AudioEngine } from './audio-engine.js';
-import { StageCanvas } from './stage-canvas.js?v=3';
+import { AudioEngine, STEREO_TECHNIQUES, POLAR_PATTERNS, createMicrophoneConfig } from './audio-engine.js';
+import { StageCanvas } from './stage-canvas.js?v=4';
 import { loadZipFromUrl, loadZipFromFile, extractAudioFiles, loadAudioFiles, mightNeedCorsProxy } from './zip-loader.js?v=3';
 import { audioBufferToWav, createWavBlob, downloadBlob, generateFilename } from './wav-encoder.js';
 import { audioBufferToMp3, isLameJsAvailable } from './mp3-encoder.js';
@@ -20,7 +20,10 @@ const state = {
   reverbPreset: 'none',
   reverbMode: 'depth',
   groundReflectionEnabled: false,
-  micSeparation: 2, // meters
+  groundReflectionModel: 'stage',
+  micSeparation: 2, // meters (legacy, now derived from micConfig)
+  micConfig: createMicrophoneConfig('spaced-pair'), // Full microphone configuration
+  showPolarPatterns: true,
   noiseGateEnabled: false,
   noiseGateThreshold: DEFAULT_NOISE_GATE_OPTIONS.thresholdDb,
   isLoading: false,
@@ -97,6 +100,11 @@ async function init() {
 
   // Update UI
   updateTransportUI();
+  updateMicControlsUI();
+  if (elements.groundReflectionModel) {
+    elements.groundReflectionModel.value = state.groundReflectionModel;
+    elements.groundReflectionModel.disabled = !state.groundReflectionEnabled;
+  }
 }
 
 /**
@@ -127,8 +135,25 @@ function cacheElements() {
   elements.masterGainValue = document.getElementById('master-gain-value');
   elements.reverbPreset = document.getElementById('reverb-preset');
   elements.groundReflectionCheckbox = document.getElementById('ground-reflection-checkbox');
-  elements.micSeparation = document.getElementById('mic-separation');
-  elements.micSeparationValue = document.getElementById('mic-separation-value');
+  elements.groundReflectionModel = document.getElementById('ground-reflection-model');
+  // Microphone controls
+  elements.micTechnique = document.getElementById('mic-technique');
+  elements.micPattern = document.getElementById('mic-pattern');
+  elements.micSpacing = document.getElementById('mic-spacing');
+  elements.micSpacingValue = document.getElementById('mic-spacing-value');
+  elements.micAngle = document.getElementById('mic-angle');
+  elements.micAngleValue = document.getElementById('mic-angle-value');
+  elements.micAngleControl = document.querySelector('.mic-angle-control');
+  elements.micSpacingControl = document.querySelector('.mic-spacing-control');
+  elements.micCenterControls = document.querySelector('.mic-center-controls');
+  elements.micCenterDepth = document.getElementById('mic-center-depth');
+  elements.micCenterDepthValue = document.getElementById('mic-center-depth-value');
+  elements.micCenterLevel = document.getElementById('mic-center-level');
+  elements.micCenterLevelValue = document.getElementById('mic-center-level-value');
+  elements.showPolarPatterns = document.getElementById('show-polar-patterns');
+  // Legacy (for compatibility)
+  elements.micSeparation = elements.micSpacing;
+  elements.micSeparationValue = elements.micSpacingValue;
   elements.resetPositionsBtn = document.getElementById('reset-positions-btn');
   elements.resetAllBtn = document.getElementById('reset-all-btn');
   elements.downloadWavBtn = document.getElementById('download-wav-btn');
@@ -185,7 +210,16 @@ function setupEventListeners() {
 
   // Physics controls
   elements.groundReflectionCheckbox.addEventListener('change', handleGroundReflectionChange);
-  elements.micSeparation.addEventListener('input', handleMicSeparationChange);
+  elements.groundReflectionModel?.addEventListener('change', handleGroundReflectionModelChange);
+
+  // Microphone controls
+  elements.micTechnique?.addEventListener('change', handleMicTechniqueChange);
+  elements.micPattern?.addEventListener('change', handleMicPatternChange);
+  elements.micSpacing?.addEventListener('input', handleMicSpacingChange);
+  elements.micAngle?.addEventListener('input', handleMicAngleChange);
+  elements.micCenterDepth?.addEventListener('input', handleMicCenterDepthChange);
+  elements.micCenterLevel?.addEventListener('input', handleMicCenterLevelChange);
+  elements.showPolarPatterns?.addEventListener('change', handleShowPolarPatternsChange);
 
   // Noise gate controls
   elements.noiseGateCheckbox.addEventListener('change', handleNoiseGateToggle);
@@ -288,17 +322,30 @@ function setupStageCallbacks() {
     }
   };
 
-  // Mic separation drag on canvas
+  // Mic separation drag on canvas (legacy callback)
   stageCanvas.onMicSeparationChange = (separation) => {
     state.micSeparation = separation;
-    elements.micSeparation.value = separation;
-    elements.micSeparationValue.textContent = `${separation.toFixed(1)}m`;
+    state.micConfig.spacing = separation;
+    if (elements.micSpacing) {
+      elements.micSpacing.value = separation;
+      elements.micSpacingValue.textContent = `${separation.toFixed(2)}m`;
+    }
     audioEngine.setMicSeparation(separation);
     markUnsaved();
   };
 
-  // Initialize canvas mic separation from state
-  stageCanvas.setMicSeparation(state.micSeparation);
+  // Full mic config change callback (from canvas drag)
+  stageCanvas.onMicConfigChange = (config) => {
+    state.micConfig = config;
+    state.micSeparation = config.spacing;
+    updateMicControlsUI();
+    audioEngine.setMicConfig(config);
+    markUnsaved();
+  };
+
+  // Initialize canvas with mic config from state
+  stageCanvas.setMicConfig(state.micConfig);
+  stageCanvas.setShowPolarPatterns(state.showPolarPatterns);
 }
 
 /**
@@ -1149,19 +1196,169 @@ function handleGroundReflectionChange(e) {
   const enabled = e.target.checked;
   state.groundReflectionEnabled = enabled;
   audioEngine.setGroundReflection(enabled);
+  if (elements.groundReflectionModel) {
+    elements.groundReflectionModel.disabled = !enabled;
+  }
   markUnsaved();
 }
 
 /**
- * Handle mic separation change
+ * Handle ground reflection model change
  */
-function handleMicSeparationChange(e) {
-  const separation = parseFloat(e.target.value);
-  state.micSeparation = separation;
-  elements.micSeparationValue.textContent = `${separation.toFixed(1)}m`;
-  audioEngine.setMicSeparation(separation);
-  stageCanvas.setMicSeparation(separation);
+function handleGroundReflectionModelChange(e) {
+  const modelId = e.target.value;
+  state.groundReflectionModel = modelId;
+  audioEngine.setGroundReflectionModel(modelId);
   markUnsaved();
+}
+
+/**
+ * Handle mic technique change
+ */
+function handleMicTechniqueChange(e) {
+  const techniqueId = e.target.value;
+  state.micConfig = createMicrophoneConfig(techniqueId);
+  state.micSeparation = state.micConfig.spacing;
+
+  // Update UI visibility based on technique
+  updateMicControlsUI();
+
+  // Sync with audio engine and canvas
+  audioEngine.setMicConfig(state.micConfig);
+  stageCanvas.setMicConfig(state.micConfig);
+  markUnsaved();
+}
+
+/**
+ * Handle mic polar pattern change
+ */
+function handleMicPatternChange(e) {
+  const pattern = e.target.value;
+  audioEngine.setMicPattern(pattern);
+  state.micConfig = audioEngine.getMicConfig();
+  stageCanvas.setMicConfig(state.micConfig);
+  markUnsaved();
+}
+
+/**
+ * Handle mic spacing change
+ */
+function handleMicSpacingChange(e) {
+  const spacing = parseFloat(e.target.value);
+  state.micSeparation = spacing;
+  state.micConfig.spacing = spacing;
+  elements.micSpacingValue.textContent = `${spacing.toFixed(2)}m`;
+  audioEngine.setMicSeparation(spacing);
+  stageCanvas.setMicSeparation(spacing);
+  markUnsaved();
+}
+
+/**
+ * Handle mic angle change
+ */
+function handleMicAngleChange(e) {
+  const angle = parseFloat(e.target.value);
+  state.micConfig.angle = angle;
+  elements.micAngleValue.textContent = `${angle}°`;
+  audioEngine.setMicAngle(angle);
+  stageCanvas.setMicAngle(angle);
+  markUnsaved();
+}
+
+/**
+ * Handle mic center depth change (Decca Tree)
+ */
+function handleMicCenterDepthChange(e) {
+  const depth = parseFloat(e.target.value);
+  state.micConfig.centerDepth = depth;
+  elements.micCenterDepthValue.textContent = `${depth.toFixed(1)}m`;
+  audioEngine.setCenterDepth(depth);
+  stageCanvas.setCenterDepth(depth);
+  markUnsaved();
+}
+
+/**
+ * Handle mic center level change (Decca Tree)
+ */
+function handleMicCenterLevelChange(e) {
+  const level = parseFloat(e.target.value);
+  state.micConfig.centerLevel = level;
+  elements.micCenterLevelValue.textContent = `${level.toFixed(1)}dB`;
+  audioEngine.setCenterLevel(level);
+  markUnsaved();
+}
+
+/**
+ * Handle polar pattern visibility toggle
+ */
+function handleShowPolarPatternsChange(e) {
+  const show = e.target.checked;
+  state.showPolarPatterns = show;
+  stageCanvas.setShowPolarPatterns(show);
+}
+
+/**
+ * Update mic controls UI based on current technique
+ */
+function updateMicControlsUI() {
+  const technique = STEREO_TECHNIQUES[state.micConfig.technique];
+  if (!technique) return;
+
+  // Update spacing slider
+  if (elements.micSpacingControl) {
+    const hasSpacing = technique.adjustable?.spacing;
+    elements.micSpacingControl.classList.toggle('hidden', !hasSpacing);
+    if (hasSpacing) {
+      const { min, max, step } = technique.adjustable.spacing;
+      elements.micSpacing.min = min;
+      elements.micSpacing.max = max;
+      elements.micSpacing.step = step;
+      elements.micSpacing.value = state.micConfig.spacing;
+      elements.micSpacingValue.textContent = `${state.micConfig.spacing.toFixed(2)}m`;
+    }
+  }
+
+  // Update angle slider
+  if (elements.micAngleControl) {
+    const hasAngle = technique.adjustable?.angle;
+    elements.micAngleControl.classList.toggle('hidden', !hasAngle);
+    if (hasAngle) {
+      const { min, max, step } = technique.adjustable.angle;
+      elements.micAngle.min = min;
+      elements.micAngle.max = max;
+      elements.micAngle.step = step;
+      elements.micAngle.value = state.micConfig.angle;
+      elements.micAngleValue.textContent = `${state.micConfig.angle}°`;
+    }
+  }
+
+  // Update center controls (Decca Tree only)
+  if (elements.micCenterControls) {
+    const hasCenter = technique.hasCenter;
+    elements.micCenterControls.classList.toggle('hidden', !hasCenter);
+    if (hasCenter) {
+      elements.micCenterDepth.value = state.micConfig.centerDepth;
+      elements.micCenterDepthValue.textContent = `${state.micConfig.centerDepth.toFixed(1)}m`;
+      elements.micCenterLevel.value = state.micConfig.centerLevel;
+      elements.micCenterLevelValue.textContent = `${state.micConfig.centerLevel.toFixed(1)}dB`;
+    }
+  }
+
+  // Update pattern dropdown (disable for fixed pattern techniques like Blumlein)
+  if (elements.micPattern) {
+    const isFixed = !!technique.fixedPattern;
+    elements.micPattern.disabled = isFixed;
+    if (isFixed) {
+      elements.micPattern.value = technique.fixedPattern;
+    } else if (state.micConfig.mics[0]) {
+      elements.micPattern.value = state.micConfig.mics[0].pattern;
+    }
+  }
+
+  // Update technique dropdown
+  if (elements.micTechnique) {
+    elements.micTechnique.value = state.micConfig.technique;
+  }
 }
 
 /**
@@ -1587,19 +1784,33 @@ async function restoreSession() {
   state.reverbMode = session.reverbMode ?? 'depth';
   state.micSeparation = session.micSeparation ?? 2;
   state.groundReflectionEnabled = session.groundReflectionEnabled ?? false;
+  state.groundReflectionModel = session.groundReflectionModel ?? state.groundReflectionModel;
   state.noiseGateEnabled = session.noiseGateEnabled ?? false;
   state.noiseGateThreshold = session.noiseGateThreshold ?? -48;
+  state.showPolarPatterns = session.showPolarPatterns ?? true;
+  // Restore mic config if available, otherwise use default
+  if (session.micConfig) {
+    state.micConfig = session.micConfig;
+    state.micSeparation = state.micConfig.spacing;
+  }
 
   audioEngine.setMasterGain(state.masterGain);
-  audioEngine.setMicSeparation(state.micSeparation);
+  audioEngine.setMicConfig(state.micConfig);
   audioEngine.setGroundReflection(state.groundReflectionEnabled);
+  audioEngine.setGroundReflectionModel(state.groundReflectionModel);
   updateReverb();
   updateTransportUI();
 
-  // Update UI controls for additional settings
-  elements.micSeparation.value = state.micSeparation;
-  elements.micSeparationValue.textContent = `${state.micSeparation.toFixed(1)}m`;
+  // Update microphone controls UI
+  updateMicControlsUI();
+  stageCanvas.setMicConfig(state.micConfig);
+  stageCanvas.setShowPolarPatterns(state.showPolarPatterns);
+  elements.showPolarPatterns.checked = state.showPolarPatterns;
   elements.groundReflectionCheckbox.checked = state.groundReflectionEnabled;
+  if (elements.groundReflectionModel) {
+    elements.groundReflectionModel.value = state.groundReflectionModel;
+    elements.groundReflectionModel.disabled = !state.groundReflectionEnabled;
+  }
   elements.noiseGateCheckbox.checked = state.noiseGateEnabled;
   elements.noiseGateThreshold.value = state.noiseGateThreshold;
   elements.noiseGateThresholdValue.textContent = `${state.noiseGateThreshold}dB`;
@@ -1644,7 +1855,10 @@ function saveCurrentSession() {
     reverbPreset: state.reverbPreset,
     reverbMode: state.reverbMode,
     micSeparation: state.micSeparation,
+    micConfig: state.micConfig,
+    showPolarPatterns: state.showPolarPatterns,
     groundReflectionEnabled: state.groundReflectionEnabled,
+    groundReflectionModel: state.groundReflectionModel,
     noiseGateEnabled: state.noiseGateEnabled,
     noiseGateThreshold: state.noiseGateThreshold,
   });

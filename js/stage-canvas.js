@@ -1,7 +1,15 @@
 // Semi-circular stage canvas with draggable instrument nodes
 // Features: gain-based sizing, edge-drag resize, M/S icons, auto-prefix stripping
+// Microphone visualization: polar patterns, stereo techniques
 
 import { FAMILY_COLORS } from './positions.js';
+import {
+  STEREO_TECHNIQUES,
+  POLAR_PATTERNS,
+  applyTechniqueLayout,
+  createMicrophoneConfig,
+} from './microphone-types.js';
+import { getPolarPatternPoints } from './microphone-math.js';
 
 export class StageCanvas {
   constructor(canvas) {
@@ -20,14 +28,21 @@ export class StageCanvas {
     this.resizeStartY = 0;
 
     this.hoveredTrackId = null;
-    this.hoveredZone = null; // 'center', 'edge', 'mute', 'solo', 'mic-left', 'mic-right'
+    this.hoveredZone = null; // 'center', 'edge', 'mute', 'solo', 'mic-left', 'mic-right', 'mic-center'
 
-    // Microphone state
-    this.micSeparation = 2.0; // meters (0.5 to 6)
+    // Microphone state - full configuration for polar patterns and techniques
+    this.micConfig = createMicrophoneConfig('spaced-pair');
+    this.micSeparation = 2.0; // Legacy (derived from micConfig.spacing)
     this.isDraggingMic = false;
-    this.draggingMicSide = null; // 'left' or 'right'
+    this.draggingMicSide = null; // 'left', 'right', or 'center'
     this.micDragStartX = 0;
+    this.micDragStartY = 0;
     this.micDragStartSeparation = 2.0;
+    this.micDragStartCenterDepth = 1.5;
+
+    // Polar pattern visualization settings
+    this.showPolarPatterns = true;
+    this.polarPatternScale = 25; // Size of polar pattern visualization in pixels
 
     // Callbacks
     this.onTrackMove = null;
@@ -38,6 +53,7 @@ export class StageCanvas {
     this.onTrackMuteToggle = null;
     this.onTrackSoloToggle = null;
     this.onMicSeparationChange = null;
+    this.onMicConfigChange = null; // Called when any mic config parameter changes
 
     // Constants
     this.baseRadius = 18;
@@ -115,7 +131,8 @@ export class StageCanvas {
 
   /**
    * Get microphone positions on canvas
-   * Returns { left: {x, y}, right: {x, y} }
+   * Returns object with positions for all mics in current config
+   * { L: {x, y, angle, pattern}, R: {x, y, angle, pattern}, C?: {...} }
    */
   getMicPositions() {
     const centerX = this.width / 2;
@@ -125,36 +142,165 @@ export class StageCanvas {
     // Map 0.5-6m to roughly 20-200px spread from center
     const maxSpread = Math.min(this.width / 2 - this.padding - 30, 200);
     const minSpread = 20;
-    const normalizedSep = (this.micSeparation - 0.5) / 5.5; // 0 to 1
-    const spread = minSpread + normalizedSep * (maxSpread - minSpread);
 
-    return {
-      left: { x: centerX - spread, y: micY },
-      right: { x: centerX + spread, y: micY },
-    };
+    // Apply technique layout to get current mic positions
+    const layoutConfig = applyTechniqueLayout({ ...this.micConfig });
+    const technique = STEREO_TECHNIQUES[this.micConfig.technique];
+
+    const result = {};
+
+    for (const mic of layoutConfig.mics) {
+      if (!mic.enabled) continue;
+
+      // Calculate pixel position based on mic offset
+      // For spacing-based techniques, use offsetX (in meters)
+      // Convert meters to pixels using same scale as separation slider
+      const normalizedOffset = mic.offsetX / 3; // Normalize to -1 to 1 range (assuming max 3m offset)
+      const pixelOffsetX = normalizedOffset * maxSpread;
+
+      // For center depth (Decca Tree), convert Y offset
+      const pixelOffsetY = mic.offsetY ? -mic.offsetY * 15 : 0; // Negative because canvas Y is inverted
+
+      result[mic.id] = {
+        x: centerX + pixelOffsetX,
+        y: micY + pixelOffsetY,
+        angle: mic.angle || 0,
+        pattern: mic.pattern,
+        label: mic.label,
+      };
+    }
+
+    // Legacy compatibility
+    if (result.L && result.R) {
+      result.left = result.L;
+      result.right = result.R;
+    }
+
+    return result;
+  }
+
+  /**
+   * Set the full microphone configuration
+   * @param {Object} config - Full MicrophoneConfig object
+   */
+  setMicConfig(config) {
+    this.micConfig = config;
+    this.micSeparation = config.spacing || 2.0;
+    this.render();
+  }
+
+  /**
+   * Update technique and re-render
+   * @param {string} techniqueId - Technique ID from STEREO_TECHNIQUES
+   */
+  setTechnique(techniqueId) {
+    this.micConfig = createMicrophoneConfig(techniqueId);
+    this.micSeparation = this.micConfig.spacing;
+    this.render();
+  }
+
+  /**
+   * Toggle polar pattern visibility
+   * @param {boolean} show - Whether to show polar patterns
+   */
+  setShowPolarPatterns(show) {
+    this.showPolarPatterns = show;
+    this.render();
   }
 
   /**
    * Check if a point is over a microphone
-   * Returns 'left', 'right', or null
+   * Returns 'left', 'right', 'center', or null
    */
   getMicAt(canvasX, canvasY) {
     const mics = this.getMicPositions();
     const hitRadius = this.micIconSize / 2 + 6;
 
-    const distLeft = Math.sqrt((canvasX - mics.left.x) ** 2 + (canvasY - mics.left.y) ** 2);
-    const distRight = Math.sqrt((canvasX - mics.right.x) ** 2 + (canvasY - mics.right.y) ** 2);
+    // Check all mics in config
+    for (const [micId, mic] of Object.entries(mics)) {
+      // Skip legacy aliases
+      if (micId === 'left' || micId === 'right') continue;
 
-    if (distLeft <= hitRadius) return 'left';
-    if (distRight <= hitRadius) return 'right';
+      const dist = Math.sqrt((canvasX - mic.x) ** 2 + (canvasY - mic.y) ** 2);
+      if (dist <= hitRadius) {
+        // Return semantic name for dragging
+        if (micId === 'L') return 'left';
+        if (micId === 'R') return 'right';
+        if (micId === 'C') return 'center';
+        return micId.toLowerCase();
+      }
+    }
     return null;
+  }
+
+  /**
+   * Get spacing limits for current technique
+   * @returns {{min: number, max: number}} Spacing limits in meters
+   */
+  getSpacingLimits() {
+    // adjustable is on the technique definition, not micConfig
+    const technique = STEREO_TECHNIQUES[this.micConfig?.technique];
+    if (technique?.adjustable?.spacing) {
+      return technique.adjustable.spacing;
+    }
+    return { min: 0.5, max: 6 }; // Default fallback for spaced pair
   }
 
   /**
    * Set microphone separation (called from external controls)
    */
   setMicSeparation(separation) {
-    this.micSeparation = Math.max(0.5, Math.min(6, separation));
+    const limits = this.getSpacingLimits();
+    this.micSeparation = Math.max(limits.min, Math.min(limits.max, separation));
+    // Also update micConfig to keep in sync
+    if (this.micConfig) {
+      this.micConfig.spacing = this.micSeparation;
+      applyTechniqueLayout(this.micConfig);
+    }
+    this.render();
+  }
+
+  /**
+   * Set mic angle for angled techniques (XY, ORTF, Blumlein)
+   * @param {number} angle - Total angle between mics in degrees
+   */
+  setMicAngle(angle) {
+    if (this.micConfig) {
+      this.micConfig.angle = angle;
+      applyTechniqueLayout(this.micConfig);
+    }
+    this.render();
+  }
+
+  /**
+   * Set center mic depth for Decca Tree
+   * @param {number} depth - Center depth in meters
+   */
+  setCenterDepth(depth) {
+    if (this.micConfig) {
+      this.micConfig.centerDepth = depth;
+      applyTechniqueLayout(this.micConfig);
+    }
+    this.render();
+  }
+
+  /**
+   * Set polar pattern for all mics (or specific mic)
+   * @param {string} pattern - Pattern ID from POLAR_PATTERNS
+   * @param {string} micId - Optional specific mic ID (L, R, C)
+   */
+  setMicPattern(pattern, micId = null) {
+    if (this.micConfig) {
+      for (const mic of this.micConfig.mics) {
+        if (!micId || mic.id === micId) {
+          const technique = STEREO_TECHNIQUES[this.micConfig.technique];
+          // Don't override fixed patterns (e.g., Blumlein must be figure-8)
+          if (!technique?.fixedPattern) {
+            mic.pattern = pattern;
+          }
+        }
+      }
+    }
     this.render();
   }
 
@@ -242,8 +388,11 @@ export class StageCanvas {
       this.isDraggingMic = true;
       this.draggingMicSide = micSide;
       this.micDragStartX = pos.x;
+      this.micDragStartY = pos.y;
       this.micDragStartSeparation = this.micSeparation;
-      this.canvas.style.cursor = 'ew-resize';
+      this.micDragStartCenterDepth = this.micConfig?.centerDepth || 1.5;
+      // Center mic drags vertically, L/R drag horizontally
+      this.canvas.style.cursor = micSide === 'center' ? 'ns-resize' : 'ew-resize';
       return;
     }
 
@@ -323,21 +472,47 @@ export class StageCanvas {
     // Handle mic dragging
     if (this.isDraggingMic) {
       const deltaX = pos.x - this.micDragStartX;
-      const centerX = this.width / 2;
-
-      // Calculate new separation based on drag
-      // Moving left mic left or right mic right increases separation
-      const direction = this.draggingMicSide === 'left' ? -1 : 1;
+      const deltaY = pos.y - this.micDragStartY;
       const pixelsPerMeter = 30; // Sensitivity
-      const separationDelta = (deltaX * direction) / pixelsPerMeter;
-      const newSeparation = Math.max(0.5, Math.min(6, this.micDragStartSeparation + separationDelta));
 
-      if (newSeparation !== this.micSeparation) {
-        this.micSeparation = newSeparation;
-        if (this.onMicSeparationChange) {
-          this.onMicSeparationChange(newSeparation);
+      if (this.draggingMicSide === 'center') {
+        // Center mic: vertical drag changes depth (Decca Tree)
+        const depthDelta = -deltaY / pixelsPerMeter; // Up = more depth
+        const technique = STEREO_TECHNIQUES[this.micConfig?.technique];
+        if (technique?.adjustable?.centerDepth) {
+          const { min, max } = technique.adjustable.centerDepth;
+          const newDepth = Math.max(min, Math.min(max, this.micDragStartCenterDepth + depthDelta));
+          if (this.micConfig) {
+            this.micConfig.centerDepth = newDepth;
+            applyTechniqueLayout(this.micConfig);
+          }
+          if (this.onMicConfigChange) {
+            this.onMicConfigChange(this.micConfig);
+          }
+          this.render();
         }
-        this.render();
+      } else {
+        // L/R mic: horizontal drag changes separation
+        const direction = this.draggingMicSide === 'left' ? -1 : 1;
+        const separationDelta = (deltaX * direction) / pixelsPerMeter;
+        const limits = this.getSpacingLimits();
+        const newSeparation = Math.max(limits.min, Math.min(limits.max, this.micDragStartSeparation + separationDelta));
+
+        if (newSeparation !== this.micSeparation) {
+          this.micSeparation = newSeparation;
+          // Sync with micConfig
+          if (this.micConfig) {
+            this.micConfig.spacing = newSeparation;
+            applyTechniqueLayout(this.micConfig);
+          }
+          if (this.onMicSeparationChange) {
+            this.onMicSeparationChange(newSeparation);
+          }
+          if (this.onMicConfigChange) {
+            this.onMicConfigChange(this.micConfig);
+          }
+          this.render();
+        }
       }
       return;
     }
@@ -375,7 +550,8 @@ export class StageCanvas {
         if (this.hoveredZone !== 'mic-' + micSide) {
           this.hoveredTrackId = null;
           this.hoveredZone = 'mic-' + micSide;
-          this.canvas.style.cursor = 'ew-resize';
+          // Center mic drags vertically, L/R drag horizontally
+          this.canvas.style.cursor = micSide === 'center' ? 'ns-resize' : 'ew-resize';
           this.render();
         }
         return;
@@ -732,54 +908,187 @@ export class StageCanvas {
   }
 
   /**
-   * Draw the L and R microphones
+   * Draw all microphones based on current technique configuration
    */
   drawMicrophones() {
     const ctx = this.ctx;
     const mics = this.getMicPositions();
-    const size = this.micIconSize;
+    const technique = STEREO_TECHNIQUES[this.micConfig.technique];
+    const centerX = this.width / 2;
+
+    // Get mic positions for L and R (and C if present)
+    const micL = mics.L;
+    const micR = mics.R;
+    const micC = mics.C;
+
+    // Determine hover states
     const isLeftHovered = this.hoveredZone === 'mic-left' || this.draggingMicSide === 'left';
     const isRightHovered = this.hoveredZone === 'mic-right' || this.draggingMicSide === 'right';
+    const isCenterHovered = this.hoveredZone === 'mic-center' || this.draggingMicSide === 'center';
 
-    // Draw connecting line between mics
     ctx.save();
+
+    // Draw connecting lines between mics
     ctx.beginPath();
-    ctx.moveTo(mics.left.x, mics.left.y);
-    ctx.lineTo(mics.right.x, mics.right.y);
+    if (micL && micR) {
+      ctx.moveTo(micL.x, micL.y);
+      if (micC && technique?.hasCenter) {
+        // Decca Tree: L -> C -> R triangle
+        ctx.lineTo(micC.x, micC.y);
+        ctx.lineTo(micR.x, micR.y);
+      } else {
+        // Standard: L -> R line
+        ctx.lineTo(micR.x, micR.y);
+      }
+    }
     ctx.strokeStyle = '#dfd0bf';
     ctx.lineWidth = 2;
     ctx.setLineDash([4, 4]);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Draw center marker
-    const centerX = this.width / 2;
-    ctx.beginPath();
-    ctx.arc(centerX, mics.left.y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = '#dfd0bf';
-    ctx.fill();
+    // Draw center reference point (for non-Decca techniques)
+    if (!micC || !technique?.hasCenter) {
+      ctx.beginPath();
+      ctx.arc(centerX, micL?.y || (this.height - this.padding + 20), 3, 0, Math.PI * 2);
+      ctx.fillStyle = '#dfd0bf';
+      ctx.fill();
+    }
     ctx.restore();
 
-    // Draw separation label
+    // Draw technique label and spacing info
     ctx.save();
     ctx.font = '11px "SF Mono", Monaco, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#5a5247';
-    ctx.fillText(`${this.micSeparation.toFixed(1)}m`, centerX, mics.left.y + 12);
+
+    const techniqueName = technique?.name || 'Spaced Pair';
+    const labelY = (micL?.y || (this.height - this.padding + 20)) + this.micIconSize + 8;
+    ctx.fillText(techniqueName, centerX, labelY);
+
+    // Show spacing for applicable techniques
+    if (technique?.adjustable?.spacing && this.micConfig.spacing) {
+      ctx.fillText(`${this.micConfig.spacing.toFixed(2)}m`, centerX, labelY + 14);
+    }
+    // Show angle for applicable techniques
+    if (technique?.adjustable?.angle && this.micConfig.angle) {
+      const angleText = technique?.adjustable?.spacing
+        ? `${this.micConfig.angle}°`
+        : `${this.micConfig.angle}°`;
+      ctx.fillText(angleText, centerX, labelY + (technique?.adjustable?.spacing ? 28 : 14));
+    }
     ctx.restore();
 
-    // Draw left microphone
-    this.drawMicIcon(mics.left.x, mics.left.y, 'L', isLeftHovered);
+    // Draw polar patterns first (behind mic icons)
+    if (this.showPolarPatterns) {
+      if (micL) this.drawPolarPattern(micL.x, micL.y, micL.pattern, micL.angle);
+      if (micR) this.drawPolarPattern(micR.x, micR.y, micR.pattern, micR.angle);
+      if (micC && technique?.hasCenter) {
+        this.drawPolarPattern(micC.x, micC.y, micC.pattern, micC.angle);
+      }
+    }
 
-    // Draw right microphone
-    this.drawMicIcon(mics.right.x, mics.right.y, 'R', isRightHovered);
+    // Draw microphone icons
+    if (micL) this.drawMicIcon(micL.x, micL.y, 'L', isLeftHovered, micL.angle);
+    if (micR) this.drawMicIcon(micR.x, micR.y, 'R', isRightHovered, micR.angle);
+    if (micC && technique?.hasCenter) {
+      this.drawMicIcon(micC.x, micC.y, 'C', isCenterHovered, micC.angle);
+    }
+  }
+
+  /**
+   * Draw polar pattern visualization around a microphone
+   * @param {number} x - Center X position
+   * @param {number} y - Center Y position
+   * @param {string} patternType - Polar pattern type ID
+   * @param {number} angle - Mic angle in degrees (0 = facing up/toward stage)
+   */
+  drawPolarPattern(x, y, patternType, angle = 0) {
+    const ctx = this.ctx;
+    const pattern = POLAR_PATTERNS[patternType];
+    if (!pattern) return;
+
+    const points = getPolarPatternPoints(patternType, 72);
+    const scale = this.polarPatternScale;
+
+    ctx.save();
+
+    // Translate to mic position and rotate for mic angle
+    ctx.translate(x, y);
+    // Mic angle: 0 = facing +Y (up in canvas terms, toward stage)
+    // Rotate so 0° points up
+    ctx.rotate((angle * Math.PI) / 180);
+
+    // Draw the polar pattern shape
+    ctx.beginPath();
+
+    // Style based on pattern type
+    ctx.strokeStyle = pattern.color || '#666666';
+    ctx.lineWidth = 1.5;
+    ctx.fillStyle = pattern.color || '#666666';
+
+    let inNegative = null;
+    const strokeAlpha = 0.6;
+    const fillAlpha = 0.1;
+
+    const strokeAndFill = () => {
+      ctx.globalAlpha = strokeAlpha;
+      ctx.stroke();
+      ctx.globalAlpha = fillAlpha;
+      ctx.fill();
+    };
+
+    for (let i = 0; i < points.length; i++) {
+      const pt = points[i];
+      const px = pt.x * scale;
+      const py = pt.y * scale;  // Already in canvas coordinates
+
+      if (i === 0) {
+        ctx.moveTo(px, py);
+        inNegative = pt.isNegative;
+      } else {
+        // If we're transitioning between positive and negative lobes, draw separately
+        if (pt.isNegative !== inNegative) {
+          strokeAndFill();
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          inNegative = pt.isNegative;
+        }
+        ctx.lineTo(px, py);
+      }
+    }
+
+    strokeAndFill();
+
+    // Draw mic axis indicator (direction mic is pointing)
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, -scale * 0.7); // Arrow pointing in mic direction
+    ctx.strokeStyle = pattern.color || '#666666';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Arrow head
+    ctx.beginPath();
+    ctx.moveTo(-4, -scale * 0.5);
+    ctx.lineTo(0, -scale * 0.7);
+    ctx.lineTo(4, -scale * 0.5);
+    ctx.stroke();
+
+    ctx.restore();
   }
 
   /**
    * Draw a single microphone icon
+   * @param {number} x - X position
+   * @param {number} y - Y position
+   * @param {string} label - Mic label (L, R, C)
+   * @param {boolean} isHovered - Whether mic is hovered
+   * @param {number} angle - Mic angle in degrees (0 = facing up)
    */
-  drawMicIcon(x, y, label, isHovered) {
+  drawMicIcon(x, y, label, isHovered, angle = 0) {
     const ctx = this.ctx;
     const size = this.micIconSize;
 
@@ -792,15 +1101,19 @@ export class StageCanvas {
       ctx.shadowOffsetY = 2;
     }
 
-    // Microphone body (capsule shape)
+    // Translate to position and rotate for mic angle
+    ctx.translate(x, y);
+    ctx.rotate((angle * Math.PI) / 180);
+
+    // Microphone body (capsule shape) - drawn relative to origin now
     ctx.beginPath();
-    ctx.arc(x, y - size * 0.15, size * 0.4, Math.PI, 0, false);
-    ctx.lineTo(x + size * 0.4, y + size * 0.2);
-    ctx.arc(x, y + size * 0.2, size * 0.4, 0, Math.PI, false);
+    ctx.arc(0, -size * 0.15, size * 0.4, Math.PI, 0, false);
+    ctx.lineTo(size * 0.4, size * 0.2);
+    ctx.arc(0, size * 0.2, size * 0.4, 0, Math.PI, false);
     ctx.closePath();
 
     // Fill with gradient
-    const gradient = ctx.createLinearGradient(x - size * 0.4, y, x + size * 0.4, y);
+    const gradient = ctx.createLinearGradient(-size * 0.4, 0, size * 0.4, 0);
     gradient.addColorStop(0, isHovered ? '#5a5247' : '#6b6b6b');
     gradient.addColorStop(0.5, isHovered ? '#8c3f21' : '#888888');
     gradient.addColorStop(1, isHovered ? '#5a5247' : '#6b6b6b');
@@ -813,33 +1126,36 @@ export class StageCanvas {
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
     ctx.lineWidth = 1;
     for (let i = -2; i <= 2; i++) {
-      const lineY = y - size * 0.1 + i * 4;
+      const lineY = -size * 0.1 + i * 4;
       ctx.beginPath();
-      ctx.moveTo(x - size * 0.25, lineY);
-      ctx.lineTo(x + size * 0.25, lineY);
+      ctx.moveTo(-size * 0.25, lineY);
+      ctx.lineTo(size * 0.25, lineY);
       ctx.stroke();
     }
 
     // Stand
     ctx.beginPath();
-    ctx.moveTo(x, y + size * 0.2);
-    ctx.lineTo(x, y + size * 0.5);
+    ctx.moveTo(0, size * 0.2);
+    ctx.lineTo(0, size * 0.5);
     ctx.strokeStyle = isHovered ? '#8c3f21' : '#888888';
     ctx.lineWidth = 3;
     ctx.stroke();
 
     // Base
     ctx.beginPath();
-    ctx.moveTo(x - size * 0.3, y + size * 0.5);
-    ctx.lineTo(x + size * 0.3, y + size * 0.5);
+    ctx.moveTo(-size * 0.3, size * 0.5);
+    ctx.lineTo(size * 0.3, size * 0.5);
     ctx.stroke();
+
+    // Reset rotation for label (keep label upright)
+    ctx.rotate((-angle * Math.PI) / 180);
 
     // Label
     ctx.font = `bold ${size * 0.5}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = isHovered ? '#b85c38' : '#5a5247';
-    ctx.fillText(label, x, y - size * 0.7);
+    ctx.fillText(label, 0, -size * 0.7);
 
     ctx.restore();
   }

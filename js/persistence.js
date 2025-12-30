@@ -14,6 +14,7 @@ const defaultState = {
   masterGain: 0.8,
   reverbPreset: 'none',
   reverbMode: 'depth',
+  groundReflectionModel: 'stage',
   savedAt: null,
 };
 
@@ -136,7 +137,10 @@ export function createSessionState(appState) {
     reverbMode: appState.reverbMode,
     // Additional settings
     micSeparation: appState.micSeparation,
+    micConfig: appState.micConfig,
+    showPolarPatterns: appState.showPolarPatterns,
     groundReflectionEnabled: appState.groundReflectionEnabled,
+    groundReflectionModel: appState.groundReflectionModel,
     noiseGateEnabled: appState.noiseGateEnabled,
     noiseGateThreshold: appState.noiseGateThreshold,
   };
