@@ -12,18 +12,12 @@
 </head>
 <body>
   <div id="app">
-    <!-- Header -->
-    <header id="header">
-      <div>
-        <h1>Orchestral Anechoic Stereo Mixer</h1>
-        <div id="profile-name">Select a profile to begin</div>
-      </div>
-    </header>
-
     <!-- Main content area -->
     <main id="main-content">
       <!-- Left sidebar: Profile selector -->
       <aside id="profile-panel">
+        <h1 class="app-title">Orpheus Mixer <span class="app-author">by Antor</span></h1>
+        <div id="profile-name"></div>
         <h2>Anechoic Recordings</h2>
         <p class="panel-subtitle">
           Symphonic recordings from <a href="https://research.cs.aalto.fi/acoustics/virtual-acoustics/research/acoustic-measurement-and-analysis/85-anechoic-recordings.html" target="_blank" rel="noopener">Aalto University</a>
@@ -46,7 +40,7 @@
             <span>Mahler - Symphony No. 1</span>
           </label>
         </div>
-        <button id="load-profile-btn" class="btn primary">Load Profile</button>
+        <button id="load-profile-btn" class="btn primary">Load recording</button>
 
         <div id="load-progress" class="hidden">
           <div class="progress-bar">
@@ -88,16 +82,6 @@
       </section>
     </main>
 
-    <!-- Track list (collapsible) -->
-    <section id="track-list-section" class="collapsed">
-      <h2 id="track-list-header">
-        <span class="collapse-icon">▶</span>
-        Tracks
-        <span id="track-count"></span>
-      </h2>
-      <div id="track-list"></div>
-    </section>
-
     <!-- Transport controls -->
     <footer id="transport">
       <div class="transport-row">
@@ -121,8 +105,8 @@
 
         <div class="master-gain-container">
           <label for="master-gain">Master</label>
-          <input type="range" id="master-gain" min="0" max="1" value="0.8" step="0.01">
-          <span id="master-gain-value">0.80</span>
+          <input type="range" id="master-gain" min="0" max="1" value="1" step="0.01">
+          <span id="master-gain-value">1.00</span>
         </div>
       </div>
 
@@ -236,6 +220,16 @@
         </div>
       </div>
     </footer>
+
+    <!-- Track list (collapsible) -->
+    <section id="track-list-section" class="collapsed">
+      <h2 id="track-list-header">
+        <span class="collapse-icon">▶</span>
+        Tracks
+        <span id="track-count"></span>
+      </h2>
+      <div id="track-list"></div>
+    </section>
 
     <!-- Toast container -->
     <div id="toast-container"></div>

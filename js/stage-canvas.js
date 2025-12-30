@@ -134,6 +134,9 @@ export class StageCanvas {
   startAnimationLoop() {
     if (this.animationFrameId) return;  // Already running
 
+    // Skip first few frames to let AnalyserNode buffers fill with real data
+    let warmupFrames = 10;
+
     const animate = () => {
       if (!this.animationEnabled) {
         this.animationFrameId = null;
@@ -142,6 +145,14 @@ export class StageCanvas {
 
       // Poll audio levels from engine
       if (this.audioEngine) {
+        // During warmup, just render without updating levels
+        if (warmupFrames > 0) {
+          warmupFrames--;
+          this.render();
+          this.animationFrameId = requestAnimationFrame(animate);
+          return;
+        }
+
         const levels = this.audioEngine.getAllTrackLevels();
 
         // Smooth transitions for each track
@@ -1632,14 +1643,16 @@ export class StageCanvas {
       let glowBlur = 0;
 
       if (audioLevel > 0.05 && !isMuted) {
-        // Pulse effect: scale 1.0 to 1.4 based on level (very dramatic)
-        const pulseScale = 1 + audioLevel * 0.4;
+        // Pulse effect: scale 1.0 to 3.0 based on level (5x amplified)
+        const pulseScale = 1 + audioLevel * 2.0;
         animatedSize = iconSize * pulseScale;
 
-        // Glow effect: bright colored shadow
-        // Make glow color brighter/more saturated
-        glowColor = this.brightenColor(color);
-        glowBlur = 8 + audioLevel * 40;  // 8px to 48px blur (very visible)
+        // Glow effect: only show for stronger signals (above ~-30dB)
+        // This prevents false glow from noise floor
+        if (audioLevel > 0.15) {
+          glowColor = this.brightenColor(color);
+          glowBlur = 8 + audioLevel * 40;  // 8px to 48px blur
+        }
       }
 
       // Draw the instrument icon (handles its own shadow, fill, stroke)

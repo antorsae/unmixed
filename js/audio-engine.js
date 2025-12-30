@@ -82,7 +82,7 @@ export class AudioEngine {
     this.pauseOffset = 0;
     this.duration = 0;
 
-    this.masterGain = 0.8;
+    this.masterGain = 1.0;
     this.reverbPreset = 'concert-hall';
     this.reverbMode = 'depth'; // 'depth' or 'uniform'
     this.reverbMix = 0.3;
@@ -1456,6 +1456,9 @@ export class AudioEngine {
     const nodes = this.trackNodes.get(trackId);
     if (!nodes || !nodes.analyser) return 0;
 
+    // Only return levels if actually playing
+    if (!this.isPlaying) return 0;
+
     // Get time-domain data from analyser
     const dataArray = new Uint8Array(nodes.analyser.fftSize);
     nodes.analyser.getByteTimeDomainData(dataArray);
@@ -1467,14 +1470,17 @@ export class AudioEngine {
       if (v > peak) peak = v;
     }
 
+    // Noise floor: ignore peaks below -55dB (0.00178 linear)
+    // This filters out quantization noise while allowing quiet instruments to animate
+    if (peak < 0.00178) return 0;
+
     // Convert to dB-like scale for perceptual response
-    // Map -60dB to 0dB → 0 to 1 (with floor at -60dB)
-    if (peak < 0.001) return 0;  // Below noise floor
-    const db = 20 * Math.log10(peak);  // peak=1 → 0dB, peak=0.001 → -60dB
-    const normalized = Math.max(0, (db + 60) / 60);  // -60dB→0, 0dB→1
+    // Map -55dB to 0dB → 0 to 1
+    const db = 20 * Math.log10(peak);  // peak=1 → 0dB, peak=0.00178 → -55dB
+    const normalized = Math.max(0, (db + 55) / 55);  // -55dB→0, 0dB→1
 
     // Apply curve to emphasize mid-range levels
-    return Math.pow(normalized, 0.7);  // Slight expansion of quieter levels
+    return Math.pow(normalized, 0.7);
   }
 
   /**

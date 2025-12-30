@@ -90,6 +90,29 @@ body {
   animation-delay: 0.05s;
 }
 
+/* App title in profile panel */
+#profile-panel .app-title {
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+  font-size: 22px;
+  font-weight: normal;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+  color: var(--ink);
+}
+
+#profile-panel .app-author {
+  font-size: 14px;
+  color: var(--ink-soft);
+  font-weight: normal;
+}
+
+#profile-panel #profile-name {
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin-bottom: 12px;
+  min-height: 1em;
+}
+
 #stage-section {
   background: var(--panel);
   border: 1px solid var(--panel-border);
