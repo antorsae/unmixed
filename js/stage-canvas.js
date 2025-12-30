@@ -1456,25 +1456,22 @@ export class StageCanvas {
 
   /**
    * Draw the semi-circular/elliptical stage
-   * Matches the coordinate system used by trackToCanvas()
+   * Uses uniform scaling to match trackToCanvas() coordinate system
    */
   drawStage() {
     const ctx = this.ctx;
-    const stageWidth = this.width - this.padding * 2;
-    const stageHeight = this.height - this.padding * 2 - 30;
 
-    const centerX = this.width / 2;
-    const bottomY = this.height - this.padding;
+    // Use uniform-scaled dimensions (same as trackToCanvas)
+    const centerX = this.stageOffsetX + this.stagePixelWidth / 2;
+    const bottomY = this.stageOffsetY + this.stagePixelHeight;
 
-    // Stage dimensions match coordinate system:
-    // X: [-1, 1] maps to stageWidth (so radius X = stageWidth/2)
-    // Y: [0, 1] maps to stageHeight (so radius Y = stageHeight)
-    const radiusX = stageWidth / 2;
-    const radiusY = stageHeight;
+    // Stage is 20m wide, 15m deep - use uniform scale
+    const radiusX = this.stagePixelWidth / 2;
+    const radiusY = this.stagePixelHeight;
 
     ctx.save();
 
-    // Draw half-ellipse matching the coordinate bounds
+    // Draw half-ellipse matching the uniform-scaled coordinate bounds
     ctx.beginPath();
     ctx.ellipse(centerX, bottomY, radiusX, radiusY, 0, Math.PI, 0, false);
     ctx.lineTo(centerX + radiusX, bottomY);
@@ -1496,30 +1493,30 @@ export class StageCanvas {
 
   /**
    * Draw subtle grid lines
+   * Uses uniform scaling to match trackToCanvas() coordinate system
    */
   drawGrid() {
     const ctx = this.ctx;
-    const stageWidth = this.width - this.padding * 2;
-    const stageHeight = this.height - this.padding * 2 - 30;
 
     ctx.save();
     ctx.strokeStyle = '#dddddd';
     ctx.lineWidth = 1;
     ctx.setLineDash([5, 5]);
 
+    // Use uniform-scaled dimensions (same as trackToCanvas)
     for (let x = -1; x <= 1; x += 0.25) {
-      const canvasX = this.padding + ((x + 1) / 2) * stageWidth;
+      const canvasX = this.stageOffsetX + ((x + 1) / 2) * this.stagePixelWidth;
       ctx.beginPath();
-      ctx.moveTo(canvasX, this.padding + 30);
-      ctx.lineTo(canvasX, this.height - this.padding);
+      ctx.moveTo(canvasX, this.stageOffsetY);
+      ctx.lineTo(canvasX, this.stageOffsetY + this.stagePixelHeight);
       ctx.stroke();
     }
 
     for (let y = 0; y <= 1; y += 0.25) {
-      const canvasY = this.padding + 30 + (1 - y) * stageHeight;
+      const canvasY = this.stageOffsetY + (1 - y) * this.stagePixelHeight;
       ctx.beginPath();
-      ctx.moveTo(this.padding, canvasY);
-      ctx.lineTo(this.width - this.padding, canvasY);
+      ctx.moveTo(this.stageOffsetX, canvasY);
+      ctx.lineTo(this.stageOffsetX + this.stagePixelWidth, canvasY);
       ctx.stroke();
     }
 

@@ -135,12 +135,14 @@ export function detectInstrument(name) {
 /**
  * Parse index from instrument name
  * Handles: vl1a -> "1a", corno7 -> "7", vlaa -> "a", vca -> "a"
+ * Works with both underscored (beethoven_vl1a) and plain (Vl1a) names
  * @param {string} name - Instrument name
  * @returns {string|null} - Index string or null
  */
 export function parseIndex(name) {
-  // Normalize spaces to underscores for consistent pattern matching
-  const raw = String(name || '').replace(/\s+/g, '_');
+  // Normalize: spaces to underscores, prepend underscore for boundary matching
+  // This matches the pattern used in detectInstrument()
+  const raw = '_' + String(name || '').toLowerCase().replace(/\s+/g, '_');
 
   // Violin pattern: vl followed by section (1 or 2) and optional desk letter
   const vlMatch = raw.match(/_vl([12])([a-h])?(?:_|$)/i);
