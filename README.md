@@ -4,7 +4,7 @@ A web-based audio mixer that simulates the physics of sound propagation in a con
 
 ## Live Demo
 
-**[https://antorsae.github.io/web-mixer/](https://antorsae.github.io/web-mixer/)**
+**[https://antorsae.github.io/unmixed/](https://antorsae.github.io/unmixed/)**
 
 ## Motivation
 
@@ -260,8 +260,8 @@ For Decca Tree, center mic has independent signal path with -3dB equal-power pan
 
 ```bash
 # Clone the repository
-git clone https://github.com/antorsae/web-mixer.git
-cd web-mixer
+git clone https://github.com/antorsae/unmixed.git
+cd unmixed
 
 # Serve locally (any static server works)
 python -m http.server 8080
