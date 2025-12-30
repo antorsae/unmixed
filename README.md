@@ -18,15 +18,36 @@ The mixer implements several acoustic phenomena to create realistic spatial audi
 
 - **Air Absorption**: High frequencies are attenuated more over distance, simulating the natural filtering effect of air. This creates more realistic depth perception for distant instruments.
 
-- **Ground Reflection** (optional): Simulates sound bouncing off the stage floor, adding subtle comb-filtering effects that contribute to the sense of space.
+- **Ground Reflection** (optional): Simulates sound bouncing off the stage floor with frequency-dependent phase behavior. Three surface models available:
+  - **Hard (rigid)**: Full reflection with minimal absorption
+  - **Stage (wood)**: Phase inversion at low frequencies, partial high-frequency absorption
+  - **Soft (absorptive)**: Maximum absorption with phase inversion
 
-### Dual Virtual Microphone System
+- **Master Limiter**: Transparent brickwall limiter prevents clipping when multiple loud instruments combine
 
-Two virtual microphones (L and R) capture the orchestra from the audience position:
+### Professional Stereo Microphone Techniques
 
-- **Adjustable Separation**: Drag the microphone icons or use the slider to adjust the stereo width (0.5m to 6m separation)
-- **Spaced Pair Configuration**: Creates natural stereo imaging with both time and amplitude differences
-- **Visual Feedback**: Microphone positions are displayed on the stage canvas with real-time separation readout
+Five industry-standard stereo recording techniques, each with accurate polar pattern modeling:
+
+| Technique | Description | Key Parameters |
+|-----------|-------------|----------------|
+| **Spaced Pair (AB)** | Two parallel mics spaced apart | Spacing: 0.5-6m |
+| **XY Coincident** | Two angled mics at same point | Angle: 60-135° |
+| **ORTF** | French broadcast standard | 17cm spacing, 110° angle |
+| **Blumlein** | Two figure-8 mics at 90° | Fixed pattern & angle |
+| **Decca Tree** | Three-mic orchestral standard | L/R spacing, center depth & level |
+
+### Polar Pattern Modeling
+
+Five polar patterns with accurate mathematical modeling:
+
+- **Omnidirectional**: Equal pickup in all directions
+- **Cardioid**: Heart-shaped pattern, rejects rear sound
+- **Supercardioid**: Tighter pickup with small rear lobe
+- **Hypercardioid**: Narrowest front pickup with rear lobe
+- **Figure-8 (Bidirectional)**: Front and rear pickup with side nulls, rear lobe phase-inverted
+
+Patterns are visualized on the stage canvas around each microphone, showing the actual pickup sensitivity in real-time.
 
 ### Instrument Directivity Simulation
 
@@ -78,7 +99,9 @@ Render your mix to audio files:
 Your work is automatically saved:
 
 - Track positions, gains, mute/solo states
-- Master gain, reverb settings, mic separation
+- Master gain, reverb settings
+- Full microphone configuration (technique, pattern, spacing, angle, center settings)
+- Ground reflection model selection
 - Restored on page reload with confirmation prompt
 
 ## Anechoic Recordings
@@ -125,10 +148,18 @@ You can also load your own multi-track audio:
 ### Audio Processing Chain
 
 ```
-Source → Gain → Panner (ITD/ILD) → Distance Filter → Reverb Send → Master
-                                                          ↓
-                                            Convolution Reverb → Master
+Source → Directivity Blend → Polar Pattern Gain → ITD Delay → Air Absorption
+                                    ↓                              ↓
+                            Ground Reflection              Stereo Merger
+                            (freq-dependent)                     ↓
+                                    ↓                      Reverb Send
+                                    └──────────────────────────→ ↓
+                                                      Convolution Reverb
+                                                              ↓
+                                                   Master Gain → Limiter → Output
 ```
+
+For Decca Tree, center mic has independent signal path with -3dB equal-power pan to L/R.
 
 ## Development
 
