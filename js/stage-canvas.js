@@ -83,7 +83,8 @@ export class StageCanvas {
     this.canvas.style.width = `${rect.width}px`;
     this.canvas.style.height = `${rect.height}px`;
 
-    this.ctx.scale(dpr, dpr);
+    // Reset transform before scaling to prevent accumulation on repeated resizes
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     this.width = rect.width;
     this.height = rect.height;

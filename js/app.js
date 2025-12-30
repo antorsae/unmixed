@@ -682,6 +682,7 @@ function createTracksFromPendingFiles() {
       muted: false,
       solo: false,
       micPosition: primary.micPosition || '6',
+      primaryMicPosition: primary.micPosition || '6', // For noise gate: which mic is the "main" buffer
       audioBuffer: originalBuffer, // Will be processed later if noise gate enabled
       originalBuffer: originalBuffer,
       alternateBuffers: originalAlternateBuffers.size > 1 ? new Map(originalAlternateBuffers) : null,
@@ -1398,24 +1399,36 @@ function initNoiseGateWorker() {
   noiseGateWorker = new Worker('js/noise-gate-worker.js');
 
   noiseGateWorker.onmessage = (e) => {
-    const { outputData, taskId } = e.data;
+    const { type, outputData, buffers, taskId } = e.data;
     const pending = noiseGatePendingTasks.get(taskId);
 
-    if (pending) {
-      noiseGatePendingTasks.delete(taskId);
+    if (!pending) return;
+    noiseGatePendingTasks.delete(taskId);
 
-      // Convert Float32Arrays back to AudioBuffer
-      const { sampleRate, resolve } = pending;
+    const { sampleRate, resolve, isMulti } = pending;
+
+    if (type === 'resultMulti' || isMulti) {
+      // Multi-buffer response: convert each buffer's channels back to AudioBuffer
+      const outputBuffers = buffers.map(buf => {
+        const numChannels = buf.channels.length;
+        const length = buf.channels[0].length;
+        const ctx = new OfflineAudioContext(numChannels, length, sampleRate);
+        const audioBuffer = ctx.createBuffer(numChannels, length, sampleRate);
+        for (let ch = 0; ch < numChannels; ch++) {
+          audioBuffer.getChannelData(ch).set(buf.channels[ch]);
+        }
+        return audioBuffer;
+      });
+      resolve(outputBuffers);
+    } else {
+      // Single buffer response (original behavior)
       const numChannels = outputData.length;
       const length = outputData[0].length;
-
       const ctx = new OfflineAudioContext(numChannels, length, sampleRate);
       const outputBuffer = ctx.createBuffer(numChannels, length, sampleRate);
-
       for (let ch = 0; ch < numChannels; ch++) {
         outputBuffer.getChannelData(ch).set(outputData[ch]);
       }
-
       resolve(outputBuffer);
     }
   };
@@ -1458,6 +1471,64 @@ function applyNoiseGateAsync(audioBuffer, options = {}) {
 }
 
 /**
+ * Apply noise gate to multiple AudioBuffers with a SHARED envelope.
+ * This ensures coherent gating across directivity buffers (front/bell)
+ * to maintain stable imaging during blending.
+ *
+ * @param {AudioBuffer[]} audioBuffers - Array of input buffers
+ * @param {Object} options - Noise gate options
+ * @returns {Promise<AudioBuffer[]>} - Array of processed buffers (same order)
+ */
+function applyNoiseGateMultiAsync(audioBuffers, options = {}) {
+  return new Promise((resolve) => {
+    const taskId = ++noiseGateTaskId;
+
+    // All buffers must have same sample rate
+    const sampleRate = audioBuffers[0].sampleRate;
+
+    // Validate all buffers have same sample rate
+    for (let i = 1; i < audioBuffers.length; i++) {
+      if (audioBuffers[i].sampleRate !== sampleRate) {
+        console.warn(`Noise gate: sample rate mismatch - buffer ${i} has ${audioBuffers[i].sampleRate}Hz vs expected ${sampleRate}Hz`);
+      }
+    }
+
+    // Extract channel data from each buffer
+    const buffers = audioBuffers.map(audioBuffer => {
+      const channels = [];
+      for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+        // Copy the data (worker will take ownership)
+        channels.push(new Float32Array(audioBuffer.getChannelData(ch)));
+      }
+      return { channels };
+    });
+
+    // Collect all ArrayBuffers for transfer
+    const transferList = [];
+    for (const buf of buffers) {
+      for (const ch of buf.channels) {
+        transferList.push(ch.buffer);
+      }
+    }
+
+    // Store pending task with multi flag
+    noiseGatePendingTasks.set(taskId, { sampleRate, resolve, isMulti: true });
+
+    // Send to worker
+    noiseGateWorker.postMessage({
+      type: 'applyNoiseGateMulti',
+      buffers,
+      sampleRate,
+      options: {
+        ...DEFAULT_NOISE_GATE_OPTIONS,
+        ...options,
+      },
+      taskId,
+    }, transferList);
+  });
+}
+
+/**
  * Yield to browser to allow paint and prevent UI freeze
  * Uses requestAnimationFrame + setTimeout to ensure paint happens
  */
@@ -1469,6 +1540,7 @@ function yieldToBrowser() {
 
 /**
  * Apply noise gate to all tracks (for initial load)
+ * Uses shared envelope for directivity buffers to maintain imaging coherence
  */
 async function applyNoiseGateToAllTracks() {
   setStatus('Applying noise gate...', 'info');
@@ -1483,24 +1555,37 @@ async function applyNoiseGateToAllTracks() {
 
     setStatus(`Applying noise gate... (${i + 1}/${trackIds.length})`, 'info');
 
-    // Process main buffer using worker
-    const sourceBuffer = track.originalBuffer || track.audioBuffer;
-    const processedBuffer = await applyNoiseGateAsync(sourceBuffer, {
-      thresholdDb: state.noiseGateThreshold,
-    });
-    track.audioBuffer = processedBuffer;
-    audioEngine.updateTrackBuffer(id, track.audioBuffer);
+    // Check if track has directivity buffers that need shared envelope
+    // Note: originalAlternateBuffers contains ALL mics including primary (no double-counting)
+    if (track.originalAlternateBuffers && track.originalAlternateBuffers.size > 1) {
+      // Use alternateBuffers directly - contains ALL mics
+      const bufferEntries = [...track.originalAlternateBuffers.entries()];
+      const allBuffers = bufferEntries.map(([_, buf]) => buf);
 
-    // Process alternate buffers if present
-    if (track.originalAlternateBuffers) {
+      // Process all buffers with unified envelope
+      const processedBuffers = await applyNoiseGateMultiAsync(allBuffers, {
+        thresholdDb: state.noiseGateThreshold,
+      });
+
+      // Store all processed buffers back
       track.alternateBuffers = new Map();
-      for (const [micPos, origBuf] of track.originalAlternateBuffers) {
-        const processed = await applyNoiseGateAsync(origBuf, {
-          thresholdDb: state.noiseGateThreshold,
-        });
-        track.alternateBuffers.set(micPos, processed);
-      }
+      bufferEntries.forEach(([micPos, _], idx) => {
+        track.alternateBuffers.set(micPos, processedBuffers[idx]);
+      });
+
+      // Update main buffer to the primary mic's processed version
+      const primaryMicPos = track.primaryMicPosition || '6';
+      track.audioBuffer = track.alternateBuffers.get(primaryMicPos);
+      audioEngine.updateTrackBuffer(id, track.audioBuffer);
       audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+    } else {
+      // Single buffer - use standard processing
+      const sourceBuffer = track.originalBuffer || track.audioBuffer;
+      const processedBuffer = await applyNoiseGateAsync(sourceBuffer, {
+        thresholdDb: state.noiseGateThreshold,
+      });
+      track.audioBuffer = processedBuffer;
+      audioEngine.updateTrackBuffer(id, track.audioBuffer);
     }
   }
 
@@ -1510,6 +1595,7 @@ async function applyNoiseGateToAllTracks() {
 /**
  * Re-process all tracks with current noise gate settings
  * Uses generation counter to prevent stale async results from being committed
+ * Uses shared envelope for directivity buffers to maintain imaging coherence
  */
 async function reprocessTracksWithNoiseGate() {
   // Increment generation to invalidate any in-flight processing
@@ -1534,42 +1620,57 @@ async function reprocessTracksWithNoiseGate() {
 
     setStatus(`${action} noise gate... (${i + 1}/${trackIds.length})`, 'info');
 
-    // Use original buffer if available, otherwise the current buffer
-    const sourceBuffer = track.originalBuffer || track.audioBuffer;
-
     if (state.noiseGateEnabled) {
-      // Apply noise gate using worker
-      const processedBuffer = await applyNoiseGateAsync(sourceBuffer, {
-        thresholdDb: state.noiseGateThreshold,
-      });
-      // Check again after async operation
-      if (thisGeneration !== noiseGateGeneration) return;
-      track.audioBuffer = processedBuffer;
+      // Check if track has directivity buffers that need shared envelope
+      // Note: originalAlternateBuffers contains ALL mics including primary (no double-counting)
+      if (track.originalAlternateBuffers && track.originalAlternateBuffers.size > 1) {
+        // Use alternateBuffers directly - contains ALL mics
+        const bufferEntries = [...track.originalAlternateBuffers.entries()];
+        const allBuffers = bufferEntries.map(([_, buf]) => buf);
+
+        // Process all buffers with unified envelope
+        const processedBuffers = await applyNoiseGateMultiAsync(allBuffers, {
+          thresholdDb: state.noiseGateThreshold,
+        });
+
+        // Check again after async operation
+        if (thisGeneration !== noiseGateGeneration) return;
+
+        // Store all processed buffers back
+        track.alternateBuffers = new Map();
+        bufferEntries.forEach(([micPos, _], idx) => {
+          track.alternateBuffers.set(micPos, processedBuffers[idx]);
+        });
+
+        // Update main buffer to the primary mic's processed version
+        const primaryMicPos = track.primaryMicPosition || '6';
+        track.audioBuffer = track.alternateBuffers.get(primaryMicPos);
+        audioEngine.updateTrackBuffer(id, track.audioBuffer);
+        audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+      } else {
+        // Single buffer - use standard processing
+        const sourceBuffer = track.originalBuffer || track.audioBuffer;
+        const processedBuffer = await applyNoiseGateAsync(sourceBuffer, {
+          thresholdDb: state.noiseGateThreshold,
+        });
+        // Check again after async operation
+        if (thisGeneration !== noiseGateGeneration) return;
+        track.audioBuffer = processedBuffer;
+        audioEngine.updateTrackBuffer(id, track.audioBuffer);
+      }
     } else {
-      // Restore original
+      // Restore original buffers
       track.audioBuffer = track.originalBuffer ? copyAudioBuffer(track.originalBuffer) : track.audioBuffer;
-    }
+      audioEngine.updateTrackBuffer(id, track.audioBuffer);
 
-    // Update audio engine with new buffer
-    audioEngine.updateTrackBuffer(id, track.audioBuffer);
-
-    // Also process alternate buffers if present
-    if (track.originalAlternateBuffers) {
-      track.alternateBuffers = new Map();
-      for (const [micPos, origBuf] of track.originalAlternateBuffers) {
-        if (state.noiseGateEnabled) {
-          const processed = await applyNoiseGateAsync(origBuf, {
-            thresholdDb: state.noiseGateThreshold,
-          });
-          // Check again after async operation
-          if (thisGeneration !== noiseGateGeneration) return;
-          track.alternateBuffers.set(micPos, processed);
-        } else {
+      // Also restore alternate buffers if present
+      if (track.originalAlternateBuffers) {
+        track.alternateBuffers = new Map();
+        for (const [micPos, origBuf] of track.originalAlternateBuffers) {
           track.alternateBuffers.set(micPos, copyAudioBuffer(origBuf));
         }
+        audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
       }
-      // Update directivity buffers in audio engine
-      audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
     }
   }
 
