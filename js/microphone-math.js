@@ -165,7 +165,7 @@ export function calculateMicrophoneResponse(sourcePos, mic, micBasePos, options 
     sourceHeight = 1.2,
     micHeight = 1.5,
     refDistance = 3,
-    minDistance = 0.3,
+    minDistance = 0.5,  // Matches UI constraint - no source closer than 0.5m
   } = options;
 
   // Calculate actual mic position with offsets
@@ -181,7 +181,9 @@ export function calculateMicrophoneResponse(sourcePos, mic, micBasePos, options 
   const effectiveDist = Math.max(distance, minDistance);
 
   // Distance-based amplitude (1/d law, normalized to reference distance)
-  const distanceGain = Math.min(1.0, refDistance / effectiveDist);
+  // No clamping - pure inverse distance law for accurate ILD at all distances
+  // Master limiter handles any clipping from close sources
+  const distanceGain = refDistance / effectiveDist;
 
   // Polar pattern gain based on incidence angle
   const incidenceAngle = calculateIncidenceAngle(sourcePos, micPos, mic.angle || 0, sourceHeight, micHeight);

@@ -131,6 +131,61 @@ export class StageCanvas {
   }
 
   /**
+   * Constrain track position to maintain minimum distance from all mics
+   * @param {Object} pos - {x, y} normalized position
+   * @param {number} minDist - minimum distance in meters (default 0.5m)
+   * @returns {Object} - constrained {x, y} position
+   */
+  constrainMinDistanceFromMics(pos, minDist = 0.5) {
+    if (!this.micConfig) return pos;
+
+    // Stage dimensions (must match STAGE_CONFIG in audio-engine.js)
+    const stageWidth = 20;  // -10m to +10m
+    const stageDepth = 15;  // 0 to 15m
+    const sourceHeight = 1.2;
+    const micHeight = 1.5;
+    const heightDiff = Math.abs(micHeight - sourceHeight);
+
+    // Convert normalized position to meters
+    let sourceX = pos.x * (stageWidth / 2);
+    let sourceY = pos.y * stageDepth;
+
+    const layoutConfig = applyTechniqueLayout({ ...this.micConfig });
+    const micBaseY = this.micConfig.micY || -1;
+
+    // Check distance to each mic and push away if too close
+    for (const mic of layoutConfig.mics) {
+      if (!mic.enabled) continue;
+
+      const micX = mic.offsetX || 0;
+      const micY = micBaseY + (mic.offsetY || 0);
+
+      // 3D distance (including height difference)
+      const dx = sourceX - micX;
+      const dy = sourceY - micY;
+      const dist2D = Math.sqrt(dx * dx + dy * dy);
+      const dist3D = Math.sqrt(dist2D * dist2D + heightDiff * heightDiff);
+
+      if (dist3D < minDist && dist2D > 0.001) {
+        // Push source away from mic along the 2D direction
+        // We need to increase dist2D such that dist3D >= minDist
+        // dist3D = sqrt(dist2D^2 + heightDiff^2) >= minDist
+        // dist2D >= sqrt(minDist^2 - heightDiff^2)
+        const minDist2D = Math.sqrt(Math.max(0, minDist * minDist - heightDiff * heightDiff));
+        const scale = minDist2D / dist2D;
+        sourceX = micX + dx * scale;
+        sourceY = micY + dy * scale;
+      }
+    }
+
+    // Convert back to normalized and clamp to stage bounds
+    return {
+      x: Math.max(-1, Math.min(1, sourceX / (stageWidth / 2))),
+      y: Math.max(0, Math.min(1, sourceY / stageDepth)),
+    };
+  }
+
+  /**
    * Get microphone positions on canvas
    * Returns object with positions for all mics in current config
    * { L: {x, y, angle, pattern}, R: {x, y, angle, pattern}, C?: {...} }
@@ -534,7 +589,10 @@ export class StageCanvas {
       // Drag mode: move track
       const newCanvasX = pos.x - this.dragOffset.x;
       const newCanvasY = pos.y - this.dragOffset.y;
-      const newPos = this.canvasToTrack(newCanvasX, newCanvasY);
+      let newPos = this.canvasToTrack(newCanvasX, newCanvasY);
+
+      // Enforce minimum distance from mics (0.5m)
+      newPos = this.constrainMinDistanceFromMics(newPos, 0.5);
 
       const track = this.tracks.get(this.dragTrackId);
       track.x = newPos.x;
