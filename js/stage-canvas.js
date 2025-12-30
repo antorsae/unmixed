@@ -45,6 +45,12 @@ export class StageCanvas {
     this.showPolarPatterns = true;
     this.polarPatternScale = 25; // Size of polar pattern visualization in pixels
 
+    // Audio engine reference for real-time level metering
+    this.audioEngine = null;
+    this.animationEnabled = true;
+    this.animationFrameId = null;
+    this.trackLevels = new Map();  // trackId -> smoothed level (0..1)
+
     // Callbacks
     this.onTrackMove = null;
     this.onTrackSelect = null;
@@ -114,6 +120,76 @@ export class StageCanvas {
   }
 
   /**
+   * Set the audio engine reference for level metering
+   * @param {AudioEngine} engine - The audio engine instance
+   */
+  setAudioEngine(engine) {
+    this.audioEngine = engine;
+  }
+
+  /**
+   * Start the animation loop for real-time level visualization
+   * Call this when playback starts
+   */
+  startAnimationLoop() {
+    if (this.animationFrameId) return;  // Already running
+
+    const animate = () => {
+      if (!this.animationEnabled) {
+        this.animationFrameId = null;
+        return;
+      }
+
+      // Poll audio levels from engine
+      if (this.audioEngine) {
+        const levels = this.audioEngine.getAllTrackLevels();
+
+        // Smooth transitions for each track
+        for (const [id, rawLevel] of levels) {
+          const current = this.trackLevels.get(id) || 0;
+          // Exponential smoothing: fast attack, slower decay
+          const smoothed = rawLevel > current
+            ? rawLevel * 0.7 + current * 0.3   // Fast attack
+            : rawLevel * 0.2 + current * 0.8;  // Slow decay
+          this.trackLevels.set(id, smoothed);
+        }
+
+        // Only re-render if playing (levels are non-zero or recently non-zero)
+        let hasActivity = false;
+        for (const level of this.trackLevels.values()) {
+          if (level > 0.001) {
+            hasActivity = true;
+            break;
+          }
+        }
+
+        if (hasActivity) {
+          this.render();
+        }
+      }
+
+      this.animationFrameId = requestAnimationFrame(animate);
+    };
+
+    this.animationFrameId = requestAnimationFrame(animate);
+  }
+
+  /**
+   * Stop the animation loop
+   * Call this when playback stops
+   */
+  stopAnimationLoop() {
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+
+    // Clear levels and re-render without animation
+    this.trackLevels.clear();
+    this.render();
+  }
+
+  /**
    * Calculate node radius based on gain (for hit testing and M/S icon positioning)
    */
   getNodeRadius(gain) {
@@ -124,17 +200,77 @@ export class StageCanvas {
 
   /**
    * Calculate icon size based on gain (SIZE = VOLUME)
-   * gain 0.0 → 16px (minimum visible)
-   * gain 0.5 → 24px
-   * gain 1.0 → 32px (default)
-   * gain 1.5 → 44px
-   * gain 2.0 → 56px (maximum)
+   * Legacy method - use getSmartIconSize() for density-aware scaling
    */
   getIconSize(gain) {
     const clampedGain = Math.max(0, Math.min(2, gain));
-    // Non-linear scaling: slower growth at low gain, faster at high
-    // Using quadratic curve for more dramatic visual difference
     return 16 + clampedGain * clampedGain * 10;
+  }
+
+  /**
+   * Smart icon sizing with density-aware base + gain modifier + overlap prevention
+   * @param {Object} track - Track object with gain property
+   * @returns {number} Icon size in pixels
+   */
+  getSmartIconSize(track) {
+    const trackCount = this.tracks.size;
+
+    // Base size by density (bigger when fewer tracks)
+    // Sizes are larger to ensure emojis are clearly visible
+    let baseSize;
+    if (trackCount < 10) {
+      baseSize = 56;  // Large icons for sparse layouts
+    } else if (trackCount < 20) {
+      baseSize = 48;  // Medium-large
+    } else if (trackCount < 35) {
+      baseSize = 40;  // Medium
+    } else {
+      baseSize = 32;  // Still readable for crowded layouts
+    }
+
+    // Gain modifier: 0.8x at gain=0, 1.0x at gain=1.0, 1.2x at gain=2.0
+    const clampedGain = Math.max(0, Math.min(2, track.gain));
+    const gainMod = 0.8 + clampedGain * 0.2;
+
+    // Check for overlaps and shrink if needed
+    const overlapFactor = this.computeOverlapFactor(baseSize * gainMod);
+
+    return baseSize * gainMod * overlapFactor;
+  }
+
+  /**
+   * Compute global shrink factor to prevent icon overlaps
+   * Uses minimum distance between any pair of tracks
+   * @param {number} proposedSize - Size before overlap adjustment
+   * @returns {number} Factor 0.5 to 1.0 (1.0 = no shrink needed)
+   */
+  computeOverlapFactor(proposedSize) {
+    if (this.tracks.size < 2) return 1.0;
+
+    // Find minimum canvas distance between any two tracks
+    let minDistancePixels = Infinity;
+    const trackArray = Array.from(this.tracks.values());
+
+    for (let i = 0; i < trackArray.length; i++) {
+      const posA = this.trackToCanvas(trackArray[i].x, trackArray[i].y);
+      for (let j = i + 1; j < trackArray.length; j++) {
+        const posB = this.trackToCanvas(trackArray[j].x, trackArray[j].y);
+        const dist = Math.sqrt((posA.x - posB.x) ** 2 + (posA.y - posB.y) ** 2);
+        minDistancePixels = Math.min(minDistancePixels, dist);
+      }
+    }
+
+    // Icons overlap if distance < 2 * iconRadius (with some padding)
+    // We want icons to have at least 4px gap between them
+    const requiredDistance = proposedSize + 4;
+
+    if (minDistancePixels >= requiredDistance) {
+      return 1.0; // No shrink needed
+    }
+
+    // Shrink proportionally, but never below 50%
+    const shrinkFactor = Math.max(0.5, minDistancePixels / requiredDistance);
+    return shrinkFactor;
   }
 
   /**
@@ -409,7 +545,7 @@ export class StageCanvas {
     for (const id of trackIds) {
       const track = this.tracks.get(id);
       const pos = this.trackToCanvas(track.x, track.y);
-      const iconSize = this.getIconSize(track.gain);
+      const iconSize = this.getSmartIconSize(track);
 
       // Get shape bounds for hit testing
       const iconInfo = track.iconInfo || getIconInfo(track.name, track.family);
@@ -1469,6 +1605,7 @@ export class StageCanvas {
 
   /**
    * Draw a track node with instrument-specific icon
+   * Includes real-time animation (pulse/glow) based on audio level
    */
   drawTrackNode(id, track) {
     try {
@@ -1479,8 +1616,8 @@ export class StageCanvas {
       const isMuted = track.muted;
 
       const color = FAMILY_COLORS[track.family] || '#888888';
-      const iconSize = this.getIconSize(track.gain);
-      const radius = this.getNodeRadius(track.gain); // For M/S positioning and gain arc
+      const iconSize = this.getSmartIconSize(track);
+      const radius = this.getNodeRadius(track.gain); // For M/S positioning
 
       // Get or compute icon info
       const iconInfo = track.iconInfo || getIconInfo(track.name, track.family);
@@ -1493,14 +1630,36 @@ export class StageCanvas {
       const isDimmed = anySolo && !track.solo && !isMuted;
       const isSoloed = track.solo;
 
+      // Get real-time audio level for animation (0..1, typically 0.05-0.3 for orchestral)
+      const audioLevel = this.trackLevels.get(id) || 0;
+      // Scale level aggressively for visible effect (orchestral RMS is often low)
+      const animationLevel = Math.min(1, audioLevel * 5);
+
+      // Apply animation: scale pulse + glow when playing
+      let animatedSize = iconSize;
+      let glowColor = null;
+      let glowBlur = 0;
+
+      if (animationLevel > 0.01 && !isMuted) {
+        // Pulse effect: scale 1.0 to 1.25 based on level (more dramatic)
+        const pulseScale = 1 + animationLevel * 0.25;
+        animatedSize = iconSize * pulseScale;
+
+        // Glow effect: colored shadow based on family color
+        glowColor = color;
+        glowBlur = 6 + animationLevel * 24;  // 6px to 30px blur (more visible)
+      }
+
       // Draw the instrument icon (handles its own shadow, fill, stroke)
       // Size now represents volume - bigger = louder
-      drawInstrumentIcon(ctx, pos.x, pos.y, iconInfo, color, iconSize, {
+      drawInstrumentIcon(ctx, pos.x, pos.y, iconInfo, color, animatedSize, {
         isSelected,
         isHovered: isHovered && this.hoveredZone !== 'mute' && this.hoveredZone !== 'solo',
         isMuted,
         isSoloed,
         isDimmed,
+        glowColor,
+        glowBlur,
       });
 
       // Draw M/S icons only on hover (small badges at bottom of icon)

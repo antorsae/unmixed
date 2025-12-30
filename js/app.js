@@ -73,6 +73,7 @@ async function init() {
   // Initialize stage canvas
   stageCanvas = new StageCanvas(elements.stageCanvas);
   setupStageCallbacks();
+  stageCanvas.setAudioEngine(audioEngine);  // For real-time level animation
 
   // Set up event listeners
   setupEventListeners();
@@ -364,8 +365,11 @@ function setupKeyboardShortcuts() {
         togglePlayback();
         break;
       case 'KeyR':
-        e.preventDefault();
-        rewind();
+        // Only rewind if no modifier keys (allow CMD+SHIFT+R for browser reload)
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+          e.preventDefault();
+          rewind();
+        }
         break;
     }
   });
@@ -1128,9 +1132,11 @@ async function togglePlayback() {
 
   if (audioEngine.isPlaying) {
     audioEngine.pause();
+    stageCanvas.stopAnimationLoop();
     updatePlayButton(false);
   } else {
     await audioEngine.play();
+    stageCanvas.startAnimationLoop();
     updatePlayButton(true);
   }
 }
@@ -1140,6 +1146,7 @@ async function togglePlayback() {
  */
 function stopPlayback() {
   audioEngine.stop();
+  stageCanvas.stopAnimationLoop();
   updatePlayButton(false);
   updateTimeDisplay(0, audioEngine.duration);
 }

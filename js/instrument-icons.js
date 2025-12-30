@@ -225,12 +225,12 @@ export function getIconInfo(name, family) {
  * @param {number} x - Center X
  * @param {number} y - Center Y
  * @param {Object} iconInfo - From getIconInfo() { name, emoji, index, family }
- * @param {string} color - Fill color (unused, kept for API compatibility)
+ * @param {string} color - Fill color (also used for animation glow)
  * @param {number} size - Icon size (default 24)
- * @param {Object} options - { isSelected, isHovered, isMuted, isSoloed, isDimmed }
+ * @param {Object} options - { isSelected, isHovered, isMuted, isSoloed, isDimmed, glowColor, glowBlur }
  */
 export function drawInstrumentIcon(ctx, x, y, iconInfo, color, size = 24, options = {}) {
-  const { isSelected, isHovered, isMuted, isSoloed, isDimmed } = options;
+  const { isSelected, isHovered, isMuted, isSoloed, isDimmed, glowColor, glowBlur } = options;
 
   ctx.save();
   ctx.translate(x, y);
@@ -261,20 +261,26 @@ export function drawInstrumentIcon(ctx, x, y, iconInfo, color, size = 24, option
     ctx.stroke();
   }
 
-  // Draw solo glow (golden)
+  // Apply animation glow effect (from real-time audio levels)
+  if (glowColor && glowBlur > 0) {
+    ctx.shadowColor = glowColor;
+    ctx.shadowBlur = glowBlur;
+  }
+
+  // Draw solo glow (golden) - overrides animation glow if solo is active
   if (isSoloed) {
     ctx.shadowColor = '#fbbf24';
     ctx.shadowBlur = 12;
   }
 
   // Draw hover effect (slight scale-up handled by size param, add subtle shadow)
-  if (isHovered && !isSelected) {
+  if (isHovered && !isSelected && !glowColor) {
     ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
     ctx.shadowBlur = 8;
   }
 
-  // Draw emoji
-  const emojiSize = Math.round(size * 0.85);
+  // Draw emoji (use 95% of size for maximum visibility)
+  const emojiSize = Math.round(size * 0.95);
   ctx.font = `${emojiSize}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';

@@ -1126,6 +1126,14 @@ export class AudioEngine {
       mixerC = this.context.createGain();
     }
 
+    // === ANALYSER NODE for real-time level metering ===
+    // Used for visual animation (pulse/glow when playing)
+    const analyser = this.context.createAnalyser();
+    analyser.fftSize = 256;  // Small buffer for low latency (256 samples = ~5ms at 48kHz)
+    analyser.smoothingTimeConstant = 0.3;  // Smooth transitions
+    // Tap the left mixer for level analysis (doesn't interrupt signal flow)
+    mixerL.connect(analyser);
+
     // Connect front source to mixers via directivity gains
     sourceFront.connect(frontGainL);
     sourceFront.connect(frontGainR);
@@ -1338,6 +1346,7 @@ export class AudioEngine {
       mixerL,
       mixerR,
       mixerC,
+      analyser,  // For real-time level metering
       delayL,
       delayR,
       delayC,
@@ -1435,6 +1444,44 @@ export class AudioEngine {
     });
 
     this.trackNodes.delete(id);
+  }
+
+  /**
+   * Get real-time audio level for a track (0..1 range)
+   * Used for visual animation (pulse/glow when playing)
+   * @param {string} trackId - Track identifier
+   * @returns {number} RMS level from 0 (silent) to 1 (full scale)
+   */
+  getTrackLevel(trackId) {
+    const nodes = this.trackNodes.get(trackId);
+    if (!nodes || !nodes.analyser) return 0;
+
+    // Get time-domain data from analyser
+    const dataArray = new Uint8Array(nodes.analyser.fftSize);
+    nodes.analyser.getByteTimeDomainData(dataArray);
+
+    // Calculate RMS (values are centered at 128, range 0-255)
+    let sumSq = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      const v = (dataArray[i] - 128) / 128;  // Normalize to -1..1
+      sumSq += v * v;
+    }
+    const rms = Math.sqrt(sumSq / dataArray.length);
+
+    // Return RMS, clamped to 0..1 (typically much less than 1)
+    return Math.min(1, rms);
+  }
+
+  /**
+   * Get audio levels for all active tracks
+   * @returns {Map<string, number>} Map of trackId -> level (0..1)
+   */
+  getAllTrackLevels() {
+    const levels = new Map();
+    for (const trackId of this.trackNodes.keys()) {
+      levels.set(trackId, this.getTrackLevel(trackId));
+    }
+    return levels;
   }
 
   /**
