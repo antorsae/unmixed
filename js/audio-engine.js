@@ -653,8 +653,6 @@ export class AudioEngine {
 
     // Apply track gain and mute/solo
     const hasSolo = Array.from(this.tracks.values()).some(t => t.solo);
-    const technique = STEREO_TECHNIQUES[this.micConfig.technique];
-    const hasCenter = technique?.hasCenter;
     const groundModel = this.groundReflectionEnabled ? this.getGroundReflectionModelConfig() : null;
     let gainMultiplier = track.gain;
     if (track.muted || (hasSolo && !track.solo)) {
