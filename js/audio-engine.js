@@ -83,9 +83,11 @@ export class AudioEngine {
     this.duration = 0;
 
     this.masterGain = 1.0;
-    this.reverbPreset = 'concert-hall';
+    this.reverbPreset = 'none';
     this.reverbMode = 'depth'; // 'depth' or 'uniform'
-    this.reverbMix = 0.3;
+    this.reverbPresetWet = 0;
+    this.reverbWet = 1;
+    this.reverbMix = 0;
     this.groundReflectionEnabled = false;
     this.groundReflectionModel = DEFAULT_GROUND_REFLECTION_MODEL;
 
@@ -167,7 +169,7 @@ export class AudioEngine {
 
     // Create reverb chain
     this.reverbGainNode = this.context.createGain();
-    this.reverbGainNode.gain.value = this.reverbMix;
+    this.reverbGainNode.gain.value = this.reverbPreset === 'none' ? 0 : 1;
     this.reverbGainNode.connect(this.masterGainNode);
 
     this.reverbNode = this.context.createConvolver();
@@ -1029,7 +1031,8 @@ export class AudioEngine {
    */
   setReverbPreset(preset, impulseBuffer, wetLevel = 0.3) {
     this.reverbPreset = preset;
-    this.reverbMix = wetLevel; // Use preset's wet level
+    this.reverbPresetWet = wetLevel;
+    this.reverbMix = this.reverbPresetWet * this.reverbWet;
 
     if (preset === 'none') {
       this.reverbGainNode.gain.value = 0;
@@ -1041,6 +1044,8 @@ export class AudioEngine {
     } else {
       this.reverbGainNode.gain.value = 0;
     }
+
+    this.updateReverbSendLevels();
   }
 
   /**
@@ -1049,12 +1054,31 @@ export class AudioEngine {
   setReverbMode(mode) {
     this.reverbMode = mode;
 
+    this.updateReverbSendLevels();
+  }
+
+  /**
+   * Set global reverb wet amount (scales preset wet)
+   */
+  setReverbWet(wet) {
+    this.reverbWet = Math.max(0, Math.min(1, wet));
+    this.reverbMix = this.reverbPresetWet * this.reverbWet;
+    this.updateReverbSendLevels();
+  }
+
+  /**
+   * Update all reverb send gains
+   */
+  updateReverbSendLevels() {
     for (const [id, track] of this.tracks) {
       const nodes = this.trackNodes.get(id);
       if (nodes && nodes.reverbSendL && nodes.reverbSendR) {
         const reverbLevel = this.calculateReverbSend(track.y);
         nodes.reverbSendL.gain.value = reverbLevel;
         nodes.reverbSendR.gain.value = reverbLevel;
+        if (nodes.reverbSendC) {
+          nodes.reverbSendC.gain.value = reverbLevel * CENTER_PAN_GAIN;
+        }
       }
     }
   }

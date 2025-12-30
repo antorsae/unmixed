@@ -19,6 +19,7 @@ const state = {
   masterGain: 1.0,
   reverbPreset: 'none',
   reverbMode: 'depth',
+  reverbWetDb: 0,
   groundReflectionEnabled: false,
   groundReflectionModel: 'stage',
   micSeparation: 2, // meters (legacy, now derived from micConfig)
@@ -135,6 +136,9 @@ function cacheElements() {
   elements.masterGain = document.getElementById('master-gain');
   elements.masterGainValue = document.getElementById('master-gain-value');
   elements.reverbPreset = document.getElementById('reverb-preset');
+  elements.reverbWet = document.getElementById('reverb-wet');
+  elements.reverbWetValue = document.getElementById('reverb-wet-value');
+  elements.reverbWetControl = document.querySelector('.reverb-wet-control');
   elements.groundReflectionCheckbox = document.getElementById('ground-reflection-checkbox');
   elements.groundReflectionModel = document.getElementById('ground-reflection-model');
   // Microphone controls
@@ -205,6 +209,7 @@ function setupEventListeners() {
 
   // Reverb controls
   elements.reverbPreset.addEventListener('change', handleReverbPresetChange);
+  elements.reverbWet.addEventListener('input', handleReverbWetChange);
   document.querySelectorAll('input[name="reverb-mode"]').forEach(radio => {
     radio.addEventListener('change', handleReverbModeChange);
   });
@@ -1197,6 +1202,37 @@ function handleReverbModeChange(e) {
   markUnsaved();
 }
 
+function dbToGain(db) {
+  return Math.pow(10, db / 20);
+}
+
+function gainToDb(gain) {
+  const safeGain = Math.max(1e-4, gain);
+  return 20 * Math.log10(safeGain);
+}
+
+function formatDb(db) {
+  const rounded = Math.round(db * 10) / 10;
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${rounded.toFixed(1)} dB`;
+}
+
+function updateReverbWetVisibility() {
+  if (!elements.reverbWetControl) return;
+  elements.reverbWetControl.classList.toggle('hidden', state.reverbPreset === 'none');
+}
+
+/**
+ * Handle reverb wet change
+ */
+function handleReverbWetChange(e) {
+  const wetDb = parseFloat(e.target.value);
+  state.reverbWetDb = wetDb;
+  audioEngine.setReverbWet(dbToGain(wetDb));
+  elements.reverbWetValue.textContent = formatDb(wetDb);
+  markUnsaved();
+}
+
 /**
  * Handle ground reflection toggle
  */
@@ -1778,7 +1814,9 @@ function updateReverb() {
   const ir = reverbManager.getImpulseResponse(state.reverbPreset);
   const presetInfo = reverbManager.getPresetInfo(state.reverbPreset);
   audioEngine.setReverbPreset(state.reverbPreset, ir, presetInfo.wet || 0);
+  audioEngine.setReverbWet(dbToGain(state.reverbWetDb));
   audioEngine.setReverbMode(state.reverbMode);
+  updateReverbWetVisibility();
 }
 
 /**
@@ -1830,7 +1868,10 @@ function updateTransportUI() {
   elements.masterGain.value = state.masterGain;
   elements.masterGainValue.textContent = state.masterGain.toFixed(2);
   elements.reverbPreset.value = state.reverbPreset;
+  elements.reverbWet.value = state.reverbWetDb;
+  elements.reverbWetValue.textContent = formatDb(state.reverbWetDb);
   document.querySelector(`input[name="reverb-mode"][value="${state.reverbMode}"]`).checked = true;
+  updateReverbWetVisibility();
 }
 
 /**
@@ -1974,6 +2015,10 @@ async function restoreSession() {
   state.masterGain = session.masterGain ?? 1.0;
   state.reverbPreset = session.reverbPreset ?? 'concert-hall';
   state.reverbMode = session.reverbMode ?? 'depth';
+  const savedWetDb = Number.isFinite(session.reverbWetDb)
+    ? session.reverbWetDb
+    : (Number.isFinite(session.reverbWet) ? gainToDb(session.reverbWet) : 0);
+  state.reverbWetDb = Math.min(6, Math.max(-24, savedWetDb));
   state.micSeparation = session.micSeparation ?? 2;
   state.groundReflectionEnabled = session.groundReflectionEnabled ?? false;
   state.groundReflectionModel = session.groundReflectionModel ?? state.groundReflectionModel;

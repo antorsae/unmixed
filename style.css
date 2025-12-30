@@ -727,6 +727,23 @@ button.primary:hover {
   accent-color: var(--accent);
 }
 
+.reverb-wet-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reverb-wet-control input[type="range"] {
+  width: 80px;
+  accent-color: var(--accent);
+}
+
+#reverb-wet-value {
+  min-width: 60px;
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: 12px;
+}
+
 /* Microphone Controls */
 .mic-controls {
   display: flex;
