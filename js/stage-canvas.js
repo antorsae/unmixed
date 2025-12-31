@@ -53,6 +53,8 @@ export class StageCanvas {
 
     // Callbacks
     this.onTrackMove = null;
+    this.onTrackMoveStart = null;
+    this.onTrackMoveEnd = null;
     this.onTrackSelect = null;
     this.onTrackDeselect = null;
     this.onTrackDoubleClick = null;
@@ -679,6 +681,9 @@ export class StageCanvas {
           y: pos.y - trackPos.y,
         };
         this.canvas.style.cursor = 'grabbing';
+        if (this.onTrackMoveStart) {
+          this.onTrackMoveStart(trackId);
+        }
       }
 
       // Handle selection
@@ -827,12 +832,20 @@ export class StageCanvas {
    * Handle mouse up
    */
   handleMouseUp(e) {
+    const wasDragging = this.isDragging && this.dragTrackId;
+    const dragTrackId = this.dragTrackId;
+    const dragTrack = wasDragging ? this.tracks.get(dragTrackId) : null;
+
     this.isDragging = false;
     this.isResizing = false;
     this.isDraggingMic = false;
     this.draggingMicSide = null;
     this.dragTrackId = null;
     this.canvas.style.cursor = 'default';
+
+    if (wasDragging && dragTrack && this.onTrackMoveEnd) {
+      this.onTrackMoveEnd(dragTrackId, dragTrack.x, dragTrack.y);
+    }
   }
 
   /**
@@ -923,6 +936,9 @@ export class StageCanvas {
           x: pos.x - trackPos.x,
           y: pos.y - trackPos.y,
         };
+        if (this.onTrackMoveStart) {
+          this.onTrackMoveStart(trackId);
+        }
 
         this.selectedIds.clear();
         this.selectedIds.add(trackId);
@@ -974,9 +990,17 @@ export class StageCanvas {
    * Handle touch end
    */
   handleTouchEnd(e) {
+    const wasDragging = this.isDragging && this.dragTrackId;
+    const dragTrackId = this.dragTrackId;
+    const dragTrack = wasDragging ? this.tracks.get(dragTrackId) : null;
+
     this.isDragging = false;
     this.isResizing = false;
     this.dragTrackId = null;
+
+    if (wasDragging && dragTrack && this.onTrackMoveEnd) {
+      this.onTrackMoveEnd(dragTrackId, dragTrack.x, dragTrack.y);
+    }
   }
 
   /**

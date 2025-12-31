@@ -35,6 +35,7 @@ const state = {
 let audioEngine = null;
 let stageCanvas = null;
 let reverbManager = null;
+let isTrackDragActive = false;
 
 // Noise gate worker
 let noiseGateWorker = null;
@@ -276,7 +277,26 @@ function setupStageCallbacks() {
     if (track) {
       track.x = x;
       track.y = y;
+      if (!isTrackDragActive) {
+        audioEngine.updateTrackPosition(trackId, x, y);
+      }
+      updateTrackListItem(trackId);
+      markUnsaved();
+    }
+  };
+
+  stageCanvas.onTrackMoveStart = (trackId) => {
+    isTrackDragActive = true;
+  };
+
+  stageCanvas.onTrackMoveEnd = (trackId, x, y) => {
+    const track = state.tracks.get(trackId);
+    isTrackDragActive = false;
+    if (track) {
+      track.x = x;
+      track.y = y;
       audioEngine.updateTrackPosition(trackId, x, y);
+      audioEngine.scheduleGraphRebuild({ delayMs: 0 });
       updateTrackListItem(trackId);
       markUnsaved();
     }
@@ -1254,7 +1274,11 @@ function handleGroundReflectionChange(e) {
   state.groundReflectionEnabled = enabled;
   audioEngine.setGroundReflection(enabled);
   if (elements.groundReflectionModel) {
-    elements.groundReflectionModel.disabled = !enabled;
+    elements.groundReflectionModel.disabled = true;
+    clearTimeout(elements.groundReflectionModel._reEnableTimer);
+    elements.groundReflectionModel._reEnableTimer = setTimeout(() => {
+      elements.groundReflectionModel.disabled = !state.groundReflectionEnabled;
+    }, 300);
   }
   markUnsaved();
 }
@@ -1452,6 +1476,14 @@ function handleNoiseGateThresholdChange(e) {
  * Initialize the noise gate Web Worker
  */
 function initNoiseGateWorker() {
+  if (noiseGateWorker) {
+    try {
+      noiseGateWorker.terminate();
+    } catch {
+      // Ignore
+    }
+  }
+
   noiseGateWorker = new Worker('js/noise-gate-worker.js');
 
   noiseGateWorker.onmessage = (e) => {
@@ -1461,10 +1493,17 @@ function initNoiseGateWorker() {
     if (!pending) return;
     noiseGatePendingTasks.delete(taskId);
 
-    const { sampleRate, resolve, isMulti } = pending;
+    const { sampleRate, resolve, isMulti, fallbackBuffer, fallbackBuffers, timeoutId } = pending;
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
 
     if (type === 'resultMulti' || isMulti) {
       // Multi-buffer response: convert each buffer's channels back to AudioBuffer
+      if (!buffers || !buffers.length) {
+        resolve({ buffers: fallbackBuffers || [], skipped: true, reason: 'worker_empty_response' });
+        return;
+      }
       const outputBuffers = buffers.map(buf => {
         const numChannels = buf.channels.length;
         const length = buf.channels[0].length;
@@ -1479,6 +1518,10 @@ function initNoiseGateWorker() {
       resolve({ buffers: outputBuffers, skipped: false });
     } else {
       // Single buffer response (original behavior)
+      if (!outputData || !outputData.length) {
+        resolve(fallbackBuffer);
+        return;
+      }
       const numChannels = outputData.length;
       const length = outputData[0].length;
       const ctx = new OfflineAudioContext(numChannels, length, sampleRate);
@@ -1489,6 +1532,32 @@ function initNoiseGateWorker() {
       resolve(outputBuffer);
     }
   };
+
+  noiseGateWorker.onerror = (err) => {
+    console.error('Noise gate worker error:', err);
+    resolveAllNoiseGatePending('worker_error');
+  };
+
+  noiseGateWorker.onmessageerror = (err) => {
+    console.error('Noise gate worker message error:', err);
+    resolveAllNoiseGatePending('worker_message_error');
+  };
+}
+
+function resolveAllNoiseGatePending(reason) {
+  for (const [taskId, pending] of noiseGatePendingTasks.entries()) {
+    const { resolve, isMulti, fallbackBuffer, fallbackBuffers, timeoutId } = pending;
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    if (isMulti) {
+      resolve({ buffers: fallbackBuffers || [], skipped: true, reason });
+    } else {
+      resolve(fallbackBuffer);
+    }
+    noiseGatePendingTasks.delete(taskId);
+  }
+  initNoiseGateWorker();
 }
 
 /**
@@ -1510,20 +1579,34 @@ function applyNoiseGateAsync(audioBuffer, options = {}) {
       channelData.push(new Float32Array(audioBuffer.getChannelData(ch)));
     }
 
+    const timeoutId = setTimeout(() => {
+      const pending = noiseGatePendingTasks.get(taskId);
+      if (!pending) return;
+      noiseGatePendingTasks.delete(taskId);
+      resolve(audioBuffer);
+    }, 60000);
+
     // Store pending task
-    noiseGatePendingTasks.set(taskId, { sampleRate, resolve });
+    noiseGatePendingTasks.set(taskId, { sampleRate, resolve, fallbackBuffer: audioBuffer, timeoutId });
 
     // Send to worker (transfer buffers for efficiency)
     const transferList = channelData.map(arr => arr.buffer);
-    noiseGateWorker.postMessage({
-      channelData,
-      sampleRate,
-      options: {
-        ...DEFAULT_NOISE_GATE_OPTIONS,
-        ...options,
-      },
-      taskId,
-    }, transferList);
+    try {
+      noiseGateWorker.postMessage({
+        channelData,
+        sampleRate,
+        options: {
+          ...DEFAULT_NOISE_GATE_OPTIONS,
+          ...options,
+        },
+        taskId,
+      }, transferList);
+    } catch (err) {
+      console.error('Noise gate worker postMessage failed:', err);
+      clearTimeout(timeoutId);
+      noiseGatePendingTasks.delete(taskId);
+      resolve(audioBuffer);
+    }
   });
 }
 
@@ -1571,20 +1654,40 @@ function applyNoiseGateMultiAsync(audioBuffers, options = {}) {
       }
     }
 
+    const timeoutId = setTimeout(() => {
+      const pending = noiseGatePendingTasks.get(taskId);
+      if (!pending) return;
+      noiseGatePendingTasks.delete(taskId);
+      resolve({ buffers: audioBuffers, skipped: true, reason: 'timeout' });
+    }, 60000);
+
     // Store pending task with multi flag
-    noiseGatePendingTasks.set(taskId, { sampleRate, resolve, isMulti: true });
+    noiseGatePendingTasks.set(taskId, {
+      sampleRate,
+      resolve,
+      isMulti: true,
+      fallbackBuffers: audioBuffers,
+      timeoutId,
+    });
 
     // Send to worker
-    noiseGateWorker.postMessage({
-      type: 'applyNoiseGateMulti',
-      buffers,
-      sampleRate,
-      options: {
-        ...DEFAULT_NOISE_GATE_OPTIONS,
-        ...options,
-      },
-      taskId,
-    }, transferList);
+    try {
+      noiseGateWorker.postMessage({
+        type: 'applyNoiseGateMulti',
+        buffers,
+        sampleRate,
+        options: {
+          ...DEFAULT_NOISE_GATE_OPTIONS,
+          ...options,
+        },
+        taskId,
+      }, transferList);
+    } catch (err) {
+      console.error('Noise gate worker postMessage failed:', err);
+      clearTimeout(timeoutId);
+      noiseGatePendingTasks.delete(taskId);
+      resolve({ buffers: audioBuffers, skipped: true, reason: 'post_message_failed' });
+    }
   });
 }
 
@@ -1637,6 +1740,8 @@ function computeNoiseFloorDb(audioBuffer, options = {}) {
 
 async function computeNoiseFloorsForTracks() {
   const trackIds = Array.from(state.tracks.keys());
+  const deferRebuild = audioEngine.isPlaying;
+  let needsRebuild = false;
   if (!trackIds.length) return;
 
   setStatus('Analyzing noise floors...', 'info');
@@ -1680,6 +1785,8 @@ async function applyNoiseGateToAllTracks() {
   await yieldToBrowser();
 
   const trackIds = Array.from(state.tracks.keys());
+  const deferRebuild = audioEngine.isPlaying;
+  let needsRebuild = false;
 
   for (let i = 0; i < trackIds.length; i++) {
     const id = trackIds[i];
@@ -1711,8 +1818,9 @@ async function applyNoiseGateToAllTracks() {
           // Skip gating for all mics to keep envelopes consistent
           track.alternateBuffers = new Map(track.originalAlternateBuffers);
           track.audioBuffer = track.alternateBuffers.get(primaryMicPos) || track.originalBuffer;
-          audioEngine.updateTrackBuffer(id, track.audioBuffer);
-          audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+          audioEngine.updateTrackBuffer(id, track.audioBuffer, { deferRebuild });
+          audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers, { deferRebuild });
+          if (deferRebuild) needsRebuild = true;
           continue;
         }
         const processedBuffers = result.buffers;
@@ -1746,8 +1854,9 @@ async function applyNoiseGateToAllTracks() {
 
       // Update main buffer to the primary mic's processed version
       track.audioBuffer = track.alternateBuffers.get(primaryMicPos);
-      audioEngine.updateTrackBuffer(id, track.audioBuffer);
-      audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+      audioEngine.updateTrackBuffer(id, track.audioBuffer, { deferRebuild });
+      audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers, { deferRebuild });
+      if (deferRebuild) needsRebuild = true;
     } else {
       // Single buffer - use standard processing
       const sourceBuffer = track.originalBuffer || track.audioBuffer;
@@ -1755,8 +1864,13 @@ async function applyNoiseGateToAllTracks() {
         thresholdDb: state.noiseGateThreshold,
       });
       track.audioBuffer = processedBuffer;
-      audioEngine.updateTrackBuffer(id, track.audioBuffer);
+      audioEngine.updateTrackBuffer(id, track.audioBuffer, { deferRebuild });
+      if (deferRebuild) needsRebuild = true;
     }
+  }
+
+  if (needsRebuild) {
+    audioEngine.scheduleGraphRebuild({ delayMs: 0 });
   }
 
   setStatus(`Loaded ${state.tracks.size} tracks (noise gate applied)`, 'success');
@@ -1779,6 +1893,8 @@ async function reprocessTracksWithNoiseGate() {
   if (thisGeneration !== noiseGateGeneration) return;
 
   const trackIds = Array.from(state.tracks.keys());
+  const deferRebuild = audioEngine.isPlaying;
+  let needsRebuild = false;
 
   for (let i = 0; i < trackIds.length; i++) {
     // Check if a newer request has come in
@@ -1818,8 +1934,9 @@ async function reprocessTracksWithNoiseGate() {
               track.alternateBuffers.set(micPos, copyAudioBuffer(origBuf));
             }
             track.audioBuffer = track.alternateBuffers.get(primaryMicPos) || track.originalBuffer;
-            audioEngine.updateTrackBuffer(id, track.audioBuffer);
-            audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+            audioEngine.updateTrackBuffer(id, track.audioBuffer, { deferRebuild });
+            audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers, { deferRebuild });
+            if (deferRebuild) needsRebuild = true;
             continue;
           }
           const processedBuffers = result.buffers;
@@ -1857,8 +1974,9 @@ async function reprocessTracksWithNoiseGate() {
 
         // Update main buffer to the primary mic's processed version
         track.audioBuffer = track.alternateBuffers.get(primaryMicPos);
-        audioEngine.updateTrackBuffer(id, track.audioBuffer);
-        audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+        audioEngine.updateTrackBuffer(id, track.audioBuffer, { deferRebuild });
+        audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers, { deferRebuild });
+        if (deferRebuild) needsRebuild = true;
       } else {
         // Single buffer - use standard processing
         const sourceBuffer = track.originalBuffer || track.audioBuffer;
@@ -1868,12 +1986,14 @@ async function reprocessTracksWithNoiseGate() {
         // Check again after async operation
         if (thisGeneration !== noiseGateGeneration) return;
         track.audioBuffer = processedBuffer;
-        audioEngine.updateTrackBuffer(id, track.audioBuffer);
+        audioEngine.updateTrackBuffer(id, track.audioBuffer, { deferRebuild });
+        if (deferRebuild) needsRebuild = true;
       }
     } else {
       // Restore original buffers
       track.audioBuffer = track.originalBuffer ? copyAudioBuffer(track.originalBuffer) : track.audioBuffer;
-      audioEngine.updateTrackBuffer(id, track.audioBuffer);
+      audioEngine.updateTrackBuffer(id, track.audioBuffer, { deferRebuild });
+      if (deferRebuild) needsRebuild = true;
 
       // Also restore alternate buffers if present
       if (track.originalAlternateBuffers) {
@@ -1881,9 +2001,14 @@ async function reprocessTracksWithNoiseGate() {
         for (const [micPos, origBuf] of track.originalAlternateBuffers) {
           track.alternateBuffers.set(micPos, copyAudioBuffer(origBuf));
         }
-        audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers);
+        audioEngine.updateTrackDirectivityBuffers(id, track.alternateBuffers, { deferRebuild });
+        if (deferRebuild) needsRebuild = true;
       }
     }
+  }
+
+  if (thisGeneration === noiseGateGeneration && needsRebuild) {
+    audioEngine.scheduleGraphRebuild({ delayMs: 0 });
   }
 
   // Only show completion message if this was the most recent request

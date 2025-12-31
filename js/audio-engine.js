@@ -26,6 +26,11 @@ const VISUAL_NOISE_MARGIN_DB = 12;
 const VISUAL_DYNAMIC_RANGE_DB = 40;
 const DEFAULT_NOISE_FLOOR_DB = -90;
 const ANALYSER_FFT_SIZE = 2048;
+const GRAPH_CROSSFADE_SECONDS = 0.12;
+const GRAPH_REBUILD_DEBOUNCE_MS = 140;
+const DEFAULT_GRAPH_SWAP_MODE = 'nonOverlap';
+const TOGGLE_CROSSFADE_SECONDS = 0.08;
+const PARAM_RAMP_SECONDS = 0.03;
 
 function safePatternGain(gain) {
   if (!Number.isFinite(gain)) return PATTERN_GAIN_EPS;
@@ -84,8 +89,10 @@ export class AudioEngine {
   constructor() {
     this.context = null;
     this.masterGainNode = null;
-    this.reverbNode = null;
-    this.reverbGainNode = null;
+    this.activeBus = null;
+    this.pendingBus = null;
+    this.pendingTrackNodes = null;
+    this.reverbImpulseBuffer = null;
 
     this.trackNodes = new Map(); // trackId -> { sourceL, sourceR, ... }
     this.tracks = new Map(); // trackId -> track data
@@ -107,6 +114,12 @@ export class AudioEngine {
     this.onTimeUpdate = null;
     this.onPlaybackEnd = null;
     this.animationFrame = null;
+    this.graphRebuildTimer = null;
+    this.graphRebuildPending = null;
+    this.graphRebuildQueued = null;
+    this.graphRebuildInProgress = false;
+    this.crossfadeTimer = null;
+    this.busDisposeTimers = new Set();
 
     // Microphone configuration (techniques, polar patterns, positions)
     this.micConfig = createMicrophoneConfig('spaced-pair');
@@ -176,17 +189,293 @@ export class AudioEngine {
     this.masterGainNode.gain.value = this.masterGain;
     this.masterGainNode.connect(this.masterLimiter);
 
-    // Create stereo merger for final L/R output
-    this.stereoMerger = this.context.createChannelMerger(2);
-    this.stereoMerger.connect(this.masterGainNode);
+    // Create initial mix bus (A/B graph crossfade support)
+    this.activeBus = this._createBus({ initialGain: 1 });
+  }
 
-    // Create reverb chain
-    this.reverbGainNode = this.context.createGain();
-    this.reverbGainNode.gain.value = this.reverbPreset === 'none' ? 0 : 1;
-    this.reverbGainNode.connect(this.masterGainNode);
+  /**
+   * Create a mix bus with its own stereo merger + reverb chain.
+   */
+  _createBus({ initialGain = 0 } = {}) {
+    const stereoMerger = this.context.createChannelMerger(2);
+    const outputGain = this.context.createGain();
+    outputGain.gain.value = initialGain;
+    stereoMerger.connect(outputGain);
 
-    this.reverbNode = this.context.createConvolver();
-    this.reverbNode.connect(this.reverbGainNode);
+    const reverbGainNode = this.context.createGain();
+    reverbGainNode.gain.value = this.reverbPreset === 'none' ? 0 : 1;
+    reverbGainNode.connect(outputGain);
+
+    const reverbNode = this.context.createConvolver();
+    if (this.reverbImpulseBuffer) {
+      reverbNode.buffer = this.reverbImpulseBuffer;
+    }
+    reverbNode.connect(reverbGainNode);
+
+    outputGain.connect(this.masterGainNode);
+
+    return {
+      stereoMerger,
+      reverbNode,
+      reverbGainNode,
+      outputGain,
+    };
+  }
+
+  _applyReverbToBus(bus) {
+    if (!bus) return;
+    if (this.reverbPreset === 'none' || !this.reverbImpulseBuffer) {
+      bus.reverbGainNode.gain.value = 0;
+      bus.reverbNode.buffer = null;
+    } else {
+      bus.reverbNode.buffer = this.reverbImpulseBuffer;
+      bus.reverbGainNode.gain.value = 1;
+    }
+  }
+
+  _disconnectBus(bus) {
+    if (!bus) return;
+    for (const node of [bus.stereoMerger, bus.reverbNode, bus.reverbGainNode, bus.outputGain]) {
+      if (node && typeof node.disconnect === 'function') {
+        try {
+          node.disconnect();
+        } catch {
+          // Ignore
+        }
+      }
+    }
+    bus.disposed = true;
+  }
+
+  _disconnectTrackNodes(nodes) {
+    if (!nodes) return;
+
+    nodes.isSuperseded = true;
+
+    // Stop all sources
+    try {
+      if (nodes.sourceFront) nodes.sourceFront.stop();
+    } catch {
+      // Ignore if already stopped
+    }
+    try {
+      if (nodes.sourceBell) nodes.sourceBell.stop();
+    } catch {
+      // Ignore if already stopped
+    }
+
+    // Disconnect all nodes
+    Object.values(nodes).forEach(node => {
+      if (node && typeof node.disconnect === 'function') {
+        try {
+          node.disconnect();
+        } catch {
+          // Ignore
+        }
+      }
+    });
+  }
+
+  _disconnectTrackMap(nodeMap) {
+    if (!nodeMap) return;
+    for (const nodes of nodeMap.values()) {
+      this._disconnectTrackNodes(nodes);
+    }
+    nodeMap.clear();
+  }
+
+  _holdBusGain(bus) {
+    if (!bus || !bus.outputGain || !this.context) return;
+    const now = this.context.currentTime;
+    const gainParam = bus.outputGain.gain;
+    if (typeof gainParam.cancelAndHoldAtTime === 'function') {
+      gainParam.cancelAndHoldAtTime(now);
+    } else {
+      gainParam.cancelScheduledValues(now);
+      gainParam.setValueAtTime(gainParam.value, now);
+    }
+  }
+
+  _disposeBusWithFade(bus, nodeMap, fadeSeconds = 0.03) {
+    if (!bus || !this.context || bus.disposed) {
+      this._disconnectTrackMap(nodeMap);
+      return;
+    }
+
+    const now = this.context.currentTime;
+    const gainParam = bus.outputGain?.gain;
+    if (gainParam) {
+      if (typeof gainParam.cancelAndHoldAtTime === 'function') {
+        gainParam.cancelAndHoldAtTime(now);
+      } else {
+        gainParam.cancelScheduledValues(now);
+        gainParam.setValueAtTime(gainParam.value, now);
+      }
+      gainParam.linearRampToValueAtTime(0, now + fadeSeconds);
+    }
+
+    const timerId = setTimeout(() => {
+      this.busDisposeTimers.delete(timerId);
+      if (bus.disposed) return;
+      this._disconnectTrackMap(nodeMap);
+      this._disconnectBus(bus);
+    }, (fadeSeconds + 0.05) * 1000);
+    this.busDisposeTimers.add(timerId);
+  }
+
+  _cancelGraphRebuild() {
+    if (this.graphRebuildTimer) {
+      clearTimeout(this.graphRebuildTimer);
+      this.graphRebuildTimer = null;
+    }
+  }
+
+  _cancelCrossfade() {
+    if (this.crossfadeTimer) {
+      clearTimeout(this.crossfadeTimer);
+      this.crossfadeTimer = null;
+    }
+  }
+
+  scheduleGraphRebuild({
+    delayMs = GRAPH_REBUILD_DEBOUNCE_MS,
+    mode = DEFAULT_GRAPH_SWAP_MODE,
+    duration = GRAPH_CROSSFADE_SECONDS,
+  } = {}) {
+    if (!this.isPlaying) {
+      this._updateAllTracks();
+      return;
+    }
+
+    this.graphRebuildPending = { mode, duration };
+    this._cancelGraphRebuild();
+    this.graphRebuildTimer = setTimeout(() => {
+      this.graphRebuildTimer = null;
+      this._flushGraphRebuild();
+    }, delayMs);
+  }
+
+  _flushGraphRebuild() {
+    const config = this.graphRebuildPending;
+    this.graphRebuildPending = null;
+    if (!config) return;
+
+    if (this.graphRebuildInProgress) {
+      this.graphRebuildQueued = config;
+      return;
+    }
+
+    this.rebuildGraphWithCrossfade(config);
+  }
+
+  rebuildGraphWithCrossfade({ duration = GRAPH_CROSSFADE_SECONDS, mode = DEFAULT_GRAPH_SWAP_MODE } = {}) {
+    if (!this.isPlaying) {
+      this._updateAllTracks();
+      return;
+    }
+
+    if (this.graphRebuildInProgress) {
+      this.graphRebuildQueued = { mode, duration };
+      return;
+    }
+
+    if (!this.context) return;
+
+    // Cancel any pending rebuilds/crossfades
+    this._cancelGraphRebuild();
+    this._cancelCrossfade();
+
+    if (this.pendingBus) {
+      this._disposeBusWithFade(this.pendingBus, this.pendingTrackNodes);
+      this.pendingBus = null;
+      this.pendingTrackNodes = null;
+    }
+
+    this._holdBusGain(this.activeBus);
+
+    this.graphRebuildInProgress = true;
+    const offset = this.getCurrentTime();
+    const nextBus = this._createBus({ initialGain: 0 });
+    const nextTrackNodes = new Map();
+
+    for (const id of this.tracks.keys()) {
+      this.connectTrack(id, offset, nextBus, nextTrackNodes);
+    }
+
+    this._startGraphCrossfade(nextBus, nextTrackNodes, duration, mode);
+  }
+
+  _startGraphCrossfade(nextBus, nextTrackNodes, duration, mode) {
+    if (!nextBus) return;
+
+    const currentBus = this.activeBus;
+    const now = this.context.currentTime;
+
+    if (!currentBus) {
+      this.activeBus = nextBus;
+      this.trackNodes = nextTrackNodes;
+      nextBus.outputGain.gain.setValueAtTime(1, now);
+      return;
+    }
+
+    this.pendingBus = nextBus;
+    this.pendingTrackNodes = nextTrackNodes;
+
+    this._holdBusGain(currentBus);
+    nextBus.outputGain.gain.cancelScheduledValues(now);
+    nextBus.outputGain.gain.setValueAtTime(0, now);
+
+    if (mode === 'nonOverlap') {
+      currentBus.outputGain.gain.linearRampToValueAtTime(0, now + duration);
+      nextBus.outputGain.gain.setValueAtTime(0, now + duration);
+      nextBus.outputGain.gain.linearRampToValueAtTime(1, now + duration * 2);
+      this.crossfadeTimer = setTimeout(() => {
+        this._finishGraphCrossfade();
+      }, (duration * 2 + 0.05) * 1000);
+      return;
+    }
+
+    currentBus.outputGain.gain.linearRampToValueAtTime(0, now + duration);
+    nextBus.outputGain.gain.linearRampToValueAtTime(1, now + duration);
+
+    this.crossfadeTimer = setTimeout(() => {
+      this._finishGraphCrossfade();
+    }, (duration + 0.05) * 1000);
+  }
+
+  _finishGraphCrossfade() {
+    this.crossfadeTimer = null;
+    if (!this.pendingBus) {
+      this.graphRebuildInProgress = false;
+      if (this.graphRebuildQueued) {
+        const queued = this.graphRebuildQueued;
+        this.graphRebuildQueued = null;
+        this.rebuildGraphWithCrossfade(queued);
+      }
+      return;
+    }
+
+    const oldBus = this.activeBus;
+    const oldTrackNodes = this.trackNodes;
+
+    this.activeBus = this.pendingBus;
+    this.trackNodes = this.pendingTrackNodes || new Map();
+    this.pendingBus = null;
+    this.pendingTrackNodes = null;
+
+    if (this.activeBus) {
+      this.activeBus.outputGain.gain.value = 1;
+    }
+
+    this._disconnectTrackMap(oldTrackNodes);
+    this._disconnectBus(oldBus);
+
+    this.graphRebuildInProgress = false;
+    if (this.graphRebuildQueued) {
+      const queued = this.graphRebuildQueued;
+      this.graphRebuildQueued = null;
+      this.rebuildGraphWithCrossfade(queued);
+    }
   }
 
   /**
@@ -320,7 +609,8 @@ export class AudioEngine {
    * Remove a track
    */
   removeTrack(id) {
-    this.disconnectTrack(id);
+    this.disconnectTrack(id, this.trackNodes);
+    this.disconnectTrack(id, this.pendingTrackNodes);
     this.tracks.delete(id);
     this.recalculateDuration();
   }
@@ -355,12 +645,12 @@ export class AudioEngine {
   setGroundReflection(enabled) {
     this.groundReflectionEnabled = enabled;
 
-    // If playing, need to rebuild audio graph
     if (this.isPlaying) {
-      const currentTime = this.getCurrentTime();
-      this.stop(false);
-      this.pauseOffset = currentTime;
-      this.play();
+      this.scheduleGraphRebuild({
+        delayMs: GRAPH_REBUILD_DEBOUNCE_MS,
+        mode: 'overlap',
+        duration: TOGGLE_CROSSFADE_SECONDS,
+      });
     }
   }
 
@@ -375,7 +665,15 @@ export class AudioEngine {
     }
 
     this.groundReflectionModel = modelId;
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild({
+        delayMs: GRAPH_REBUILD_DEBOUNCE_MS,
+        mode: 'overlap',
+        duration: TOGGLE_CROSSFADE_SECONDS,
+      });
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -400,7 +698,11 @@ export class AudioEngine {
     this.micConfig.spacing = separation;
     this.micConfig = validateConfig(this.micConfig);
     this._updateLegacyMicPositions();
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -418,7 +720,11 @@ export class AudioEngine {
     this.micConfig.micY = micY;
     this.micConfig = validateConfig(this.micConfig);
     this._updateLegacyMicPositions();
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -442,12 +748,8 @@ export class AudioEngine {
     });
     this._updateLegacyMicPositions();
 
-    // Rebuild audio graph if playing (technique change may add/remove center mic)
     if (this.isPlaying) {
-      const currentTime = this.getCurrentTime();
-      this.stop(false);
-      this.pauseOffset = currentTime;
-      this.play();
+      this.scheduleGraphRebuild();
     } else {
       this._updateAllTracks();
     }
@@ -468,7 +770,11 @@ export class AudioEngine {
     this.micConfig.angle = angle;
     this.micConfig = validateConfig(this.micConfig);
     this._updateLegacyMicPositions();
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -506,7 +812,11 @@ export class AudioEngine {
     }
 
     this._updateLegacyMicPositions();
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -525,7 +835,11 @@ export class AudioEngine {
   setCenterLevel(level) {
     this.micConfig.centerLevel = level;
     this.micConfig = validateConfig(this.micConfig);
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -543,7 +857,11 @@ export class AudioEngine {
     this.micConfig.centerDepth = depth;
     this.micConfig = validateConfig(this.micConfig);
     this._updateLegacyMicPositions();
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -559,7 +877,11 @@ export class AudioEngine {
    */
   setMSDecodeEnabled(enabled) {
     this.micConfig.msDecodeEnabled = enabled;
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -576,7 +898,11 @@ export class AudioEngine {
   setMSWidth(width) {
     this.micConfig.msWidth = width;
     this.micConfig = validateConfig(this.micConfig);
-    this._updateAllTracks();
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+    } else {
+      this._updateAllTracks();
+    }
   }
 
   /**
@@ -594,12 +920,8 @@ export class AudioEngine {
     this.micConfig = createConfigFromPreset(presetId);
     this._updateLegacyMicPositions();
 
-    // Rebuild audio graph if playing
     if (this.isPlaying) {
-      const currentTime = this.getCurrentTime();
-      this.stop(false);
-      this.pauseOffset = currentTime;
-      this.play();
+      this.scheduleGraphRebuild();
     } else {
       this._updateAllTracks();
     }
@@ -620,12 +942,8 @@ export class AudioEngine {
     this.micConfig = validateConfig({ ...config });
     this._updateLegacyMicPositions();
 
-    // Rebuild audio graph if playing (technique may have changed)
     if (this.isPlaying) {
-      const currentTime = this.getCurrentTime();
-      this.stop(false);
-      this.pauseOffset = currentTime;
-      this.play();
+      this.scheduleGraphRebuild();
     } else {
       this._updateAllTracks();
     }
@@ -635,10 +953,13 @@ export class AudioEngine {
    * Update all track audio params
    */
   _updateAllTracks() {
-    for (const [id, track] of this.tracks) {
-      const nodes = this.trackNodes.get(id);
-      if (nodes) {
-        this.updateTrackAudioParams(id, track, nodes);
+    const nodeMaps = [this.trackNodes, this.pendingTrackNodes].filter(Boolean);
+    for (const nodeMap of nodeMaps) {
+      for (const [id, track] of this.tracks) {
+        const nodes = nodeMap.get(id);
+        if (nodes) {
+          this.updateTrackAudioParams(id, track, nodes);
+        }
       }
     }
   }
@@ -653,9 +974,17 @@ export class AudioEngine {
     track.x = x;
     track.y = y;
 
-    const nodes = this.trackNodes.get(id);
-    if (nodes) {
-      this.updateTrackAudioParams(id, track, nodes);
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild();
+      return;
+    }
+
+    const nodeMaps = [this.trackNodes, this.pendingTrackNodes].filter(Boolean);
+    for (const nodeMap of nodeMaps) {
+      const nodes = nodeMap.get(id);
+      if (nodes) {
+        this.updateTrackAudioParams(id, track, nodes);
+      }
     }
   }
 
@@ -981,9 +1310,12 @@ export class AudioEngine {
 
     track.gain = gain;
 
-    const nodes = this.trackNodes.get(id);
-    if (nodes) {
-      this.updateTrackAudioParams(id, track, nodes);
+    const nodeMaps = [this.trackNodes, this.pendingTrackNodes].filter(Boolean);
+    for (const nodeMap of nodeMaps) {
+      const nodes = nodeMap.get(id);
+      if (nodes) {
+        this.updateTrackAudioParams(id, track, nodes);
+      }
     }
   }
 
@@ -996,9 +1328,12 @@ export class AudioEngine {
 
     track.muted = muted;
 
-    const nodes = this.trackNodes.get(id);
-    if (nodes) {
-      this.updateTrackAudioParams(id, track, nodes);
+    const nodeMaps = [this.trackNodes, this.pendingTrackNodes].filter(Boolean);
+    for (const nodeMap of nodeMaps) {
+      const nodes = nodeMap.get(id);
+      if (nodes) {
+        this.updateTrackAudioParams(id, track, nodes);
+      }
     }
   }
 
@@ -1012,10 +1347,13 @@ export class AudioEngine {
     track.solo = solo;
 
     // Update all tracks since solo affects others
-    for (const [trackId, trackData] of this.tracks) {
-      const nodes = this.trackNodes.get(trackId);
-      if (nodes) {
-        this.updateTrackAudioParams(trackId, trackData, nodes);
+    const nodeMaps = [this.trackNodes, this.pendingTrackNodes].filter(Boolean);
+    for (const nodeMap of nodeMaps) {
+      for (const [trackId, trackData] of this.tracks) {
+        const nodes = nodeMap.get(trackId);
+        if (nodes) {
+          this.updateTrackAudioParams(trackId, trackData, nodes);
+        }
       }
     }
   }
@@ -1023,7 +1361,7 @@ export class AudioEngine {
   /**
    * Update track audio buffer (for noise gate re-processing)
    */
-  updateTrackBuffer(id, newBuffer) {
+  updateTrackBuffer(id, newBuffer, options = {}) {
     const track = this.tracks.get(id);
     if (!track) return;
 
@@ -1034,18 +1372,17 @@ export class AudioEngine {
       this.duration = newBuffer.duration;
     }
 
-    // If playing, reconnect with new buffer
+    // If playing, rebuild graph with crossfade unless deferred
     if (this.isPlaying) {
-      const currentTime = this.getCurrentTime();
-      this.disconnectTrack(id);
-      this.connectTrack(id, currentTime);
+      if (options.deferRebuild) return;
+      this.scheduleGraphRebuild({ delayMs: 0 });
     }
   }
 
   /**
    * Update track directivity buffers (for noise gate re-processing)
    */
-  updateTrackDirectivityBuffers(id, alternateBuffers) {
+  updateTrackDirectivityBuffers(id, alternateBuffers, options = {}) {
     const track = this.tracks.get(id);
     if (!track) return;
 
@@ -1060,11 +1397,9 @@ export class AudioEngine {
       track.bellBuffer = null;
     }
 
-    // If playing, reconnect with new buffers
     if (this.isPlaying) {
-      const currentTime = this.getCurrentTime();
-      this.disconnectTrack(id);
-      this.connectTrack(id, currentTime);
+      if (options.deferRebuild) return;
+      this.scheduleGraphRebuild({ delayMs: 0 });
     }
   }
 
@@ -1074,7 +1409,15 @@ export class AudioEngine {
   setMasterGain(gain) {
     this.masterGain = gain;
     if (this.masterGainNode) {
-      this.masterGainNode.gain.value = gain;
+      const now = this.context ? this.context.currentTime : 0;
+      const param = this.masterGainNode.gain;
+      if (typeof param.cancelAndHoldAtTime === 'function') {
+        param.cancelAndHoldAtTime(now);
+      } else {
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(param.value, now);
+      }
+      param.setTargetAtTime(gain, now, PARAM_RAMP_SECONDS);
     }
   }
 
@@ -1085,16 +1428,15 @@ export class AudioEngine {
     this.reverbPreset = preset;
     this.reverbPresetWet = wetLevel;
     this.reverbMix = this.reverbPresetWet * this.reverbWet;
+    this.reverbImpulseBuffer = preset === 'none' ? null : impulseBuffer || null;
 
-    if (preset === 'none') {
-      this.reverbGainNode.gain.value = 0;
-      this.reverbNode.buffer = null;
-    } else if (impulseBuffer) {
-      this.reverbNode.buffer = impulseBuffer;
-      // Wet level is applied in per-track sends, keep return gain at unity.
-      this.reverbGainNode.gain.value = 1;
+    if (this.isPlaying) {
+      this.scheduleGraphRebuild({
+        mode: 'overlap',
+        duration: TOGGLE_CROSSFADE_SECONDS,
+      });
     } else {
-      this.reverbGainNode.gain.value = 0;
+      this._applyReverbToBus(this.activeBus);
     }
 
     this.updateReverbSendLevels();
@@ -1122,14 +1464,18 @@ export class AudioEngine {
    * Update all reverb send gains
    */
   updateReverbSendLevels() {
-    for (const [id, track] of this.tracks) {
-      const nodes = this.trackNodes.get(id);
-      if (nodes && nodes.reverbSendL && nodes.reverbSendR) {
-        const reverbLevel = this.calculateReverbSend(track.y);
-        nodes.reverbSendL.gain.value = reverbLevel;
-        nodes.reverbSendR.gain.value = reverbLevel;
-        if (nodes.reverbSendC) {
-          nodes.reverbSendC.gain.value = reverbLevel * CENTER_PAN_GAIN;
+    const now = this.context ? this.context.currentTime : 0;
+    const nodeMaps = [this.trackNodes, this.pendingTrackNodes].filter(Boolean);
+    for (const nodeMap of nodeMaps) {
+      for (const [id, track] of this.tracks) {
+        const nodes = nodeMap.get(id);
+        if (nodes && nodes.reverbSendL && nodes.reverbSendR) {
+          const reverbLevel = this.calculateReverbSend(track.y);
+          nodes.reverbSendL.gain.setTargetAtTime(reverbLevel, now, PARAM_RAMP_SECONDS);
+          nodes.reverbSendR.gain.setTargetAtTime(reverbLevel, now, PARAM_RAMP_SECONDS);
+          if (nodes.reverbSendC) {
+            nodes.reverbSendC.gain.setTargetAtTime(reverbLevel * CENTER_PAN_GAIN, now, PARAM_RAMP_SECONDS);
+          }
         }
       }
     }
@@ -1152,9 +1498,14 @@ export class AudioEngine {
   /**
    * Create audio nodes for a track with dual-mic simulation and directivity
    */
-  connectTrack(id, offset = 0) {
+  connectTrack(id, offset = 0, bus = this.activeBus, nodeMap = this.trackNodes) {
     const track = this.tracks.get(id);
     if (!track) return;
+
+    if (!bus) {
+      this.activeBus = this._createBus({ initialGain: 1 });
+      bus = this.activeBus;
+    }
 
     const hasDirectivity = track.frontBuffer && track.bellBuffer;
     const technique = STEREO_TECHNIQUES[this.micConfig.technique];
@@ -1261,7 +1612,7 @@ export class AudioEngine {
       prevNodeL.connect(filter);
       prevNodeL = filter;
     }
-    prevNodeL.connect(this.stereoMerger, 0, 0); // Left channel
+    prevNodeL.connect(bus.stereoMerger, 0, 0); // Left channel
 
     mixerR.connect(delayR);
     // Chain the R filter bank
@@ -1270,7 +1621,7 @@ export class AudioEngine {
       prevNodeR.connect(filter);
       prevNodeR = filter;
     }
-    prevNodeR.connect(this.stereoMerger, 0, 1); // Right channel
+    prevNodeR.connect(bus.stereoMerger, 0, 1); // Right channel
 
     // === CENTER MIC CHAIN (Decca Tree) ===
     let delayC = null;
@@ -1292,8 +1643,8 @@ export class AudioEngine {
       centerBus = this.context.createGain();
       centerBus.gain.value = CENTER_PAN_GAIN;
       prevNodeC.connect(centerBus);
-      centerBus.connect(this.stereoMerger, 0, 0);
-      centerBus.connect(this.stereoMerger, 0, 1);
+      centerBus.connect(bus.stereoMerger, 0, 0);
+      centerBus.connect(bus.stereoMerger, 0, 1);
     }
 
     // === GROUND REFLECTION (optional) ===
@@ -1350,7 +1701,7 @@ export class AudioEngine {
       prevGroundL.connect(groundHighFilterL);
       groundHighFilterL.connect(groundHighGainL);
       groundHighGainL.connect(groundSumL);
-      groundSumL.connect(this.stereoMerger, 0, 0);
+      groundSumL.connect(bus.stereoMerger, 0, 0);
 
       mixerR.connect(groundBaseGainR);
       groundBaseGainR.connect(groundDelayR);
@@ -1366,7 +1717,7 @@ export class AudioEngine {
       prevGroundR.connect(groundHighFilterR);
       groundHighFilterR.connect(groundHighGainR);
       groundHighGainR.connect(groundSumR);
-      groundSumR.connect(this.stereoMerger, 0, 1);
+      groundSumR.connect(bus.stereoMerger, 0, 1);
 
       if (hasCenter && mixerC && centerBus) {
         groundBaseGainC = this.context.createGain();
@@ -1417,7 +1768,7 @@ export class AudioEngine {
       reverbSendC.connect(reverbMerger, 0, 0);
       reverbSendC.connect(reverbMerger, 0, 1);
     }
-    reverbMerger.connect(this.reverbNode);
+    reverbMerger.connect(bus.reverbNode);
 
     // Store nodes
     const nodes = {
@@ -1473,9 +1824,10 @@ export class AudioEngine {
       hasDirectivity,
       hasCenter,
       ended: false,
+      isSuperseded: false,
     };
 
-    this.trackNodes.set(id, nodes);
+    nodeMap.set(id, nodes);
 
     // Set initial parameters
     this.updateTrackAudioParams(id, track, nodes);
@@ -1487,16 +1839,19 @@ export class AudioEngine {
     }
 
     // Handle playback end
+    const nodeMapRef = nodeMap;
     sourceFront.onended = () => {
       nodes.ended = true;
-      if (this.isPlaying) {
-        const allEnded = Array.from(this.trackNodes.values()).every(n => {
-          return !n.sourceFront.buffer || n.ended;
-        });
+      if (nodes.isSuperseded) return;
+      if (nodeMapRef !== this.trackNodes) return;
+      if (!this.isPlaying) return;
 
-        if (allEnded && this.onPlaybackEnd) {
-          this.onPlaybackEnd();
-        }
+      const allEnded = Array.from(nodeMapRef.values()).every(n => {
+        return !n.sourceFront.buffer || n.ended;
+      });
+
+      if (allEnded && this.onPlaybackEnd) {
+        this.onPlaybackEnd();
       }
     };
   }
@@ -1504,34 +1859,12 @@ export class AudioEngine {
   /**
    * Disconnect audio nodes for a track
    */
-  disconnectTrack(id) {
-    const nodes = this.trackNodes.get(id);
+  disconnectTrack(id, nodeMap = this.trackNodes) {
+    const nodes = nodeMap.get(id);
     if (!nodes) return;
 
-    // Stop all sources
-    try {
-      if (nodes.sourceFront) nodes.sourceFront.stop();
-    } catch {
-      // Ignore if already stopped
-    }
-    try {
-      if (nodes.sourceBell) nodes.sourceBell.stop();
-    } catch {
-      // Ignore if already stopped
-    }
-
-    // Disconnect all nodes
-    Object.values(nodes).forEach(node => {
-      if (node && typeof node.disconnect === 'function') {
-        try {
-          node.disconnect();
-        } catch {
-          // Ignore
-        }
-      }
-    });
-
-    this.trackNodes.delete(id);
+    this._disconnectTrackNodes(nodes);
+    nodeMap.delete(id);
   }
 
   /**
@@ -1621,6 +1954,12 @@ export class AudioEngine {
 
     const offset = this.pauseOffset;
 
+    if (!this.activeBus) {
+      this.activeBus = this._createBus({ initialGain: 1 });
+    } else {
+      this.activeBus.outputGain.gain.value = 1;
+    }
+
     for (const id of this.tracks.keys()) {
       this.connectTrack(id, offset);
     }
@@ -1645,8 +1984,24 @@ export class AudioEngine {
    * Stop playback
    */
   stop(resetPosition = true) {
-    for (const id of this.trackNodes.keys()) {
-      this.disconnectTrack(id);
+    this._cancelGraphRebuild();
+    this._cancelCrossfade();
+    this.graphRebuildPending = null;
+    this.graphRebuildQueued = null;
+    this.graphRebuildInProgress = false;
+
+    this._disconnectTrackMap(this.trackNodes);
+    this._disconnectTrackMap(this.pendingTrackNodes);
+    this.pendingTrackNodes = null;
+
+    for (const timerId of this.busDisposeTimers) {
+      clearTimeout(timerId);
+    }
+    this.busDisposeTimers.clear();
+
+    if (this.pendingBus) {
+      this._disconnectBus(this.pendingBus);
+      this.pendingBus = null;
     }
 
     this.isPlaying = false;
@@ -1658,6 +2013,10 @@ export class AudioEngine {
     if (this.animationFrame) {
       cancelAnimationFrame(this.animationFrame);
       this.animationFrame = null;
+    }
+
+    if (this.activeBus) {
+      this.activeBus.outputGain.gain.value = 1;
     }
   }
 
@@ -1748,9 +2107,9 @@ export class AudioEngine {
     reverbGain.gain.value = this.reverbPreset === 'none' ? 0 : 1;
     reverbGain.connect(masterGain);
 
-    if (this.reverbNode.buffer && this.reverbPreset !== 'none') {
+    if (this.reverbImpulseBuffer && this.reverbPreset !== 'none') {
       reverbConvolver = offlineContext.createConvolver();
-      reverbConvolver.buffer = this.reverbNode.buffer;
+      reverbConvolver.buffer = this.reverbImpulseBuffer;
       reverbConvolver.connect(reverbGain);
     }
 
