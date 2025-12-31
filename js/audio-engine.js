@@ -22,6 +22,10 @@ import {
 // Physical constants
 const SPEED_OF_SOUND = 343; // m/s at 20°C
 const PATTERN_GAIN_EPS = 1e-4;
+const VISUAL_NOISE_MARGIN_DB = 12;
+const VISUAL_DYNAMIC_RANGE_DB = 40;
+const DEFAULT_NOISE_FLOOR_DB = -90;
+const ANALYSER_FFT_SIZE = 2048;
 
 function safePatternGain(gain) {
   if (!Number.isFinite(gain)) return PATTERN_GAIN_EPS;
@@ -29,6 +33,15 @@ function safePatternGain(gain) {
     return gain < 0 ? -PATTERN_GAIN_EPS : PATTERN_GAIN_EPS;
   }
   return gain;
+}
+
+function dbToLinear(db) {
+  return Math.pow(10, db / 20);
+}
+
+function linearToDb(linear, minDb = DEFAULT_NOISE_FLOOR_DB) {
+  if (!Number.isFinite(linear) || linear <= 0) return minDb;
+  return Math.max(minDb, 20 * Math.log10(linear));
 }
 
 // Air absorption coefficients in dB per 100 meters at different frequencies
@@ -285,6 +298,9 @@ export class AudioEngine {
       directivityBuffers: options.directivityBuffers ?? null,
       frontBuffer: null,
       bellBuffer: null,
+      noiseFloorDb: Number.isFinite(options.noiseFloorDb) ? options.noiseFloorDb : DEFAULT_NOISE_FLOOR_DB,
+      noiseFloorByMic: options.noiseFloorByMic ?? null,
+      primaryMicPosition: options.primaryMicPosition ?? '6',
     };
 
     // Extract front (mic 6) and bell (mic 8) buffers for directivity
@@ -643,6 +659,21 @@ export class AudioEngine {
     }
   }
 
+  getNoiseFloorForMic(track, micPos) {
+    const fallback = Number.isFinite(track.noiseFloorDb) ? track.noiseFloorDb : DEFAULT_NOISE_FLOOR_DB;
+    const map = track.noiseFloorByMic;
+    if (!map) return fallback;
+    if (map instanceof Map) {
+      const value = map.get(micPos);
+      return Number.isFinite(value) ? value : fallback;
+    }
+    if (typeof map === 'object') {
+      const value = map[micPos];
+      return Number.isFinite(value) ? value : fallback;
+    }
+    return fallback;
+  }
+
   /**
    * Update audio parameters for a track based on position
    * Uses polar pattern aware stereo response calculation
@@ -699,23 +730,44 @@ export class AudioEngine {
     if (nodes.hasDirectivity) {
       // Apply directivity: front and bell sources are blended per channel
       // Mic polar pattern gain (ampL/ampR) combined with instrument directivity (blendL/blendR)
-      nodes.frontGainL.gain.setTargetAtTime(ampL * gainMultiplier * blendL.front, now, rampTime);
-      nodes.frontGainR.gain.setTargetAtTime(ampR * gainMultiplier * blendR.front, now, rampTime);
-      nodes.bellGainL.gain.setTargetAtTime(ampL * gainMultiplier * blendL.bell, now, rampTime);
-      nodes.bellGainR.gain.setTargetAtTime(ampR * gainMultiplier * blendR.bell, now, rampTime);
+      const frontGainLValue = ampL * gainMultiplier * blendL.front;
+      const frontGainRValue = ampR * gainMultiplier * blendR.front;
+      const bellGainLValue = ampL * gainMultiplier * blendL.bell;
+      const bellGainRValue = ampR * gainMultiplier * blendR.bell;
+
+      nodes.frontGainL.gain.setTargetAtTime(frontGainLValue, now, rampTime);
+      nodes.frontGainR.gain.setTargetAtTime(frontGainRValue, now, rampTime);
+      nodes.bellGainL.gain.setTargetAtTime(bellGainLValue, now, rampTime);
+      nodes.bellGainR.gain.setTargetAtTime(bellGainRValue, now, rampTime);
       if (nodes.frontGainC) {
         nodes.frontGainC.gain.setTargetAtTime(ampC * gainMultiplier * blendC.front, now, rampTime);
       }
       if (nodes.bellGainC) {
         nodes.bellGainC.gain.setTargetAtTime(ampC * gainMultiplier * blendC.bell, now, rampTime);
       }
+
+      const noiseFrontDb = this.getNoiseFloorForMic(track, track.primaryMicPosition);
+      const noiseBellDb = this.getNoiseFloorForMic(track, '8');
+      const noiseFront = dbToLinear(noiseFrontDb);
+      const noiseBell = dbToLinear(noiseBellDb);
+      const noiseL = Math.sqrt(
+        Math.pow(Math.abs(frontGainLValue) * noiseFront, 2) +
+        Math.pow(Math.abs(bellGainLValue) * noiseBell, 2)
+      );
+      nodes.visualNoiseFloorDb = linearToDb(noiseL);
     } else {
       // No instrument directivity: apply mic polar pattern gain directly
-      nodes.frontGainL.gain.setTargetAtTime(ampL * gainMultiplier, now, rampTime);
-      nodes.frontGainR.gain.setTargetAtTime(ampR * gainMultiplier, now, rampTime);
+      const gainLValue = ampL * gainMultiplier;
+      const gainRValue = ampR * gainMultiplier;
+      nodes.frontGainL.gain.setTargetAtTime(gainLValue, now, rampTime);
+      nodes.frontGainR.gain.setTargetAtTime(gainRValue, now, rampTime);
       if (nodes.frontGainC) {
         nodes.frontGainC.gain.setTargetAtTime(ampC * gainMultiplier, now, rampTime);
       }
+
+      const noiseDb = this.getNoiseFloorForMic(track, track.primaryMicPosition);
+      const noiseL = Math.abs(gainLValue) * dbToLinear(noiseDb);
+      nodes.visualNoiseFloorDb = linearToDb(noiseL);
     }
 
     // === DELAYS (ITD) ===
@@ -1157,10 +1209,15 @@ export class AudioEngine {
     // === ANALYSER NODE for real-time level metering ===
     // Used for visual animation (pulse/glow when playing)
     const analyser = this.context.createAnalyser();
-    analyser.fftSize = 256;  // Small buffer for low latency (256 samples = ~5ms at 48kHz)
+    analyser.fftSize = ANALYSER_FFT_SIZE;  // Larger window for stable RMS (~43ms at 48kHz)
     analyser.smoothingTimeConstant = 0.3;  // Smooth transitions
     // Tap the left mixer for level analysis (doesn't interrupt signal flow)
     mixerL.connect(analyser);
+
+    const analyserFloatData = typeof analyser.getFloatTimeDomainData === 'function'
+      ? new Float32Array(analyser.fftSize)
+      : null;
+    const analyserByteData = analyserFloatData ? null : new Uint8Array(analyser.fftSize);
 
     // Connect front source to mixers via directivity gains
     sourceFront.connect(frontGainL);
@@ -1376,6 +1433,8 @@ export class AudioEngine {
       mixerR,
       mixerC,
       analyser,  // For real-time level metering
+      analyserFloatData,
+      analyserByteData,
       delayL,
       delayR,
       delayC,
@@ -1477,7 +1536,7 @@ export class AudioEngine {
 
   /**
    * Get real-time audio level for a track (0..1 range)
-   * Uses peak detection with dB scaling for more visible animation
+   * Uses RMS detection with per-track noise floor gating
    * @param {string} trackId - Track identifier
    * @returns {number} Level from 0 (silent) to 1 (loud)
    */
@@ -1488,25 +1547,53 @@ export class AudioEngine {
     // Only return levels if actually playing
     if (!this.isPlaying) return 0;
 
-    // Get time-domain data from analyser
-    const dataArray = new Uint8Array(nodes.analyser.fftSize);
-    nodes.analyser.getByteTimeDomainData(dataArray);
+    // Wait for audio to actually be flowing before reporting levels
+    // AnalyserNode buffers contain uninitialized/stale data initially
+    const playbackTime = this.context.currentTime - this.startTime;
+    if (playbackTime < 0.05) return 0;  // 50ms warmup for real audio data
 
-    // Find peak amplitude (more responsive than RMS for animation)
-    let peak = 0;
-    for (let i = 0; i < dataArray.length; i++) {
-      const v = Math.abs(dataArray[i] - 128) / 128;  // 0..1 range
-      if (v > peak) peak = v;
+    // Get time-domain data from analyser
+    const analyser = nodes.analyser;
+    let sumSquares = 0;
+    let sampleCount = 0;
+
+    if (nodes.analyserFloatData && typeof analyser.getFloatTimeDomainData === 'function') {
+      if (nodes.analyserFloatData.length !== analyser.fftSize) {
+        nodes.analyserFloatData = new Float32Array(analyser.fftSize);
+      }
+      analyser.getFloatTimeDomainData(nodes.analyserFloatData);
+      const dataArray = nodes.analyserFloatData;
+      sampleCount = dataArray.length;
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = dataArray[i];
+        sumSquares += v * v;
+      }
+    } else {
+      if (!nodes.analyserByteData || nodes.analyserByteData.length !== analyser.fftSize) {
+        nodes.analyserByteData = new Uint8Array(analyser.fftSize);
+      }
+      analyser.getByteTimeDomainData(nodes.analyserByteData);
+      const dataArray = nodes.analyserByteData;
+      sampleCount = dataArray.length;
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = (dataArray[i] - 128) / 128;  // -1..1 range
+        sumSquares += v * v;
+      }
     }
 
-    // Noise floor: ignore peaks below -55dB (0.00178 linear)
-    // This filters out quantization noise while allowing quiet instruments to animate
-    if (peak < 0.00178) return 0;
+    // Compute RMS amplitude for stability (less jumpy than peaks)
+    const rms = sampleCount ? Math.sqrt(sumSquares / sampleCount) : 0;
 
-    // Convert to dB-like scale for perceptual response
-    // Map -55dB to 0dB → 0 to 1
-    const db = 20 * Math.log10(peak);  // peak=1 → 0dB, peak=0.00178 → -55dB
-    const normalized = Math.max(0, (db + 55) / 55);  // -55dB→0, 0dB→1
+    if (rms <= 0) return 0;
+
+    const rmsDb = 20 * Math.log10(rms);
+    const noiseFloorDb = Number.isFinite(nodes.visualNoiseFloorDb)
+      ? nodes.visualNoiseFloorDb + VISUAL_NOISE_MARGIN_DB
+      : DEFAULT_NOISE_FLOOR_DB + VISUAL_NOISE_MARGIN_DB;
+
+    if (rmsDb <= noiseFloorDb) return 0;
+
+    const normalized = Math.min(1, (rmsDb - noiseFloorDb) / VISUAL_DYNAMIC_RANGE_DB);
 
     // Apply curve to emphasize mid-range levels
     return Math.pow(normalized, 0.7);

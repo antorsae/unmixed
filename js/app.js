@@ -51,6 +51,13 @@ let debouncedSaveSession = null;
 // DOM elements
 const elements = {};
 
+const NOISE_FLOOR_ANALYSIS = {
+  windowMs: 50,
+  percentile: 0.1,
+  maxWindows: 1000,
+  minDb: -120,
+};
+
 /**
  * Initialize the application
  */
@@ -444,7 +451,7 @@ async function loadProfile(profileKey, url, displayName) {
     }, updateProgress);
 
     // Finalize
-    finalizeTracks();
+    await finalizeTracks();
     hideProgress();
     setStatus(`Loaded ${state.tracks.size} tracks`, 'success');
     updateProfileName();
@@ -498,7 +505,7 @@ async function handleZipFile(file) {
       await processAudioFile(f.filename, f.arrayBuffer);
     }, updateProgress);
 
-    finalizeTracks();
+    await finalizeTracks();
     hideProgress();
     setStatus(`Loaded ${state.tracks.size} tracks`, 'success');
     updateProfileName();
@@ -586,7 +593,7 @@ async function loadFilesArray(files) {
       await processAudioFile(file.filename, file.arrayBuffer);
     }, updateProgress);
 
-    finalizeTracks();
+    await finalizeTracks();
     hideProgress();
     setStatus(`Loaded ${state.tracks.size} tracks`, 'success');
     updateProfileName();
@@ -779,7 +786,7 @@ function resolveTrackOverlaps() {
 /**
  * Finalize tracks after loading
  */
-function finalizeTracks() {
+async function finalizeTracks() {
   // First, group pending files and create tracks
   createTracksFromPendingFiles();
 
@@ -819,6 +826,9 @@ function finalizeTracks() {
   // Resolve any remaining overlaps
   resolveTrackOverlaps();
 
+  // Analyze per-track noise floors before wiring audio graph
+  await computeNoiseFloorsForTracks();
+
   // Add tracks to audio engine and stage
   for (const [id, track] of state.tracks) {
     audioEngine.addTrack(id, track.audioBuffer, {
@@ -829,6 +839,9 @@ function finalizeTracks() {
       solo: track.solo,
       // Pass alternate buffers for directivity simulation
       directivityBuffers: track.alternateBuffers,
+      noiseFloorDb: track.noiseFloorDb,
+      noiseFloorByMic: track.noiseFloorByMic,
+      primaryMicPosition: track.primaryMicPosition,
     });
 
     stageCanvas.addTrack(id, {
@@ -1583,6 +1596,79 @@ function yieldToBrowser() {
   return new Promise(resolve => {
     requestAnimationFrame(() => setTimeout(resolve, 0));
   });
+}
+
+function computeNoiseFloorDb(audioBuffer, options = {}) {
+  const windowMs = options.windowMs ?? NOISE_FLOOR_ANALYSIS.windowMs;
+  const percentile = options.percentile ?? NOISE_FLOOR_ANALYSIS.percentile;
+  const maxWindows = options.maxWindows ?? NOISE_FLOOR_ANALYSIS.maxWindows;
+  const minDb = options.minDb ?? NOISE_FLOOR_ANALYSIS.minDb;
+
+  const channel = audioBuffer.getChannelData(0);
+  const windowSamples = Math.max(1, Math.floor(audioBuffer.sampleRate * windowMs / 1000));
+  const totalWindows = Math.floor(channel.length / windowSamples);
+
+  if (totalWindows === 0) return minDb;
+
+  const stride = Math.max(1, Math.floor(totalWindows / maxWindows));
+  const rmsDbValues = [];
+
+  for (let w = 0; w < totalWindows; w += stride) {
+    const start = w * windowSamples;
+    const end = Math.min(start + windowSamples, channel.length);
+    let sumSquares = 0;
+    for (let i = start; i < end; i++) {
+      const v = channel[i];
+      sumSquares += v * v;
+    }
+    const length = end - start;
+    if (length === 0) continue;
+    const rms = Math.sqrt(sumSquares / length);
+    const db = rms > 0 ? 20 * Math.log10(rms) : minDb;
+    rmsDbValues.push(Math.max(minDb, db));
+  }
+
+  if (!rmsDbValues.length) return minDb;
+
+  rmsDbValues.sort((a, b) => a - b);
+  const index = Math.min(rmsDbValues.length - 1, Math.floor(rmsDbValues.length * percentile));
+  return rmsDbValues[index] ?? minDb;
+}
+
+async function computeNoiseFloorsForTracks() {
+  const trackIds = Array.from(state.tracks.keys());
+  if (!trackIds.length) return;
+
+  setStatus('Analyzing noise floors...', 'info');
+  await yieldToBrowser();
+
+  for (let i = 0; i < trackIds.length; i++) {
+    const id = trackIds[i];
+    const track = state.tracks.get(id);
+    if (!track) continue;
+
+    if (i % 5 === 0) {
+      setStatus(`Analyzing noise floors... (${i + 1}/${trackIds.length})`, 'info');
+      await yieldToBrowser();
+    }
+
+    const noiseFloorByMic = new Map();
+    const primaryMic = track.primaryMicPosition || '6';
+    const targetMics = new Set([primaryMic, '8']);
+    if (track.originalAlternateBuffers && track.originalAlternateBuffers.size) {
+      for (const [micPos, buf] of track.originalAlternateBuffers.entries()) {
+        if (!targetMics.has(micPos)) continue;
+        noiseFloorByMic.set(micPos, computeNoiseFloorDb(buf));
+      }
+    } else if (track.originalBuffer) {
+      noiseFloorByMic.set(primaryMic, computeNoiseFloorDb(track.originalBuffer));
+    }
+
+    track.noiseFloorByMic = noiseFloorByMic;
+    track.noiseFloorDb = noiseFloorByMic.get(primaryMic)
+      ?? noiseFloorByMic.values().next().value
+      ?? NOISE_FLOOR_ANALYSIS.minDb;
+  }
 }
 
 /**

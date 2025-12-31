@@ -160,8 +160,8 @@ export class StageCanvas {
           const current = this.trackLevels.get(id) || 0;
           // Exponential smoothing: very fast attack, medium decay
           const smoothed = rawLevel > current
-            ? rawLevel * 0.85 + current * 0.15  // Very fast attack
-            : rawLevel * 0.4 + current * 0.6;   // Medium decay (snappier)
+            ? rawLevel * 0.4 + current * 0.6  // Slower attack
+            : rawLevel * 0.4 + current * 0.6; // Medium decay (snappier)
           this.trackLevels.set(id, smoothed);
         }
 
@@ -1642,14 +1642,14 @@ export class StageCanvas {
       let glowColor = null;
       let glowBlur = 0;
 
-      if (audioLevel > 0.05 && !isMuted) {
+      if (audioLevel > 0.1 && !isMuted) {
         // Pulse effect: scale 1.0 to 3.0 based on level (5x amplified)
         const pulseScale = 1 + audioLevel * 2.0;
         animatedSize = iconSize * pulseScale;
 
         // Glow effect: only show for stronger signals (above ~-30dB)
         // This prevents false glow from noise floor
-        if (audioLevel > 0.15) {
+        if (audioLevel > 0.2) {
           glowColor = this.brightenColor(color);
           glowBlur = 8 + audioLevel * 40;  // 8px to 48px blur
         }
