@@ -2,6 +2,7 @@
 // Physics-based microphone response simulation
 
 import { POLAR_PATTERNS, STEREO_TECHNIQUES, applyTechniqueLayout, cloneMicConfig } from './microphone-types.js';
+import { STAGE_CONFIG, MIC_CONSTANTS } from './physics-constants.js';
 
 // Speed of sound at 20°C
 const SPEED_OF_SOUND = 343;
@@ -162,10 +163,10 @@ export function calculateDistance3D(source, mic, sourceHeight, micHeight) {
  */
 export function calculateMicrophoneResponse(sourcePos, mic, micBasePos, options = {}) {
   const {
-    sourceHeight = 1.2,
-    micHeight = 1.5,
-    refDistance = 3,
-    minDistance = 0.5,  // Matches UI constraint - no source closer than 0.5m
+    sourceHeight = STAGE_CONFIG.sourceHeight,
+    micHeight = STAGE_CONFIG.micHeight,
+    refDistance = MIC_CONSTANTS.refDistance,
+    minDistance = MIC_CONSTANTS.minDistance,
   } = options;
 
   // Calculate actual mic position with offsets
@@ -216,13 +217,12 @@ export function calculateMicrophoneResponse(sourcePos, mic, micBasePos, options 
  * @param {Object} stageConfig - {width, depth, sourceHeight, micHeight}
  * @returns {Object} {left: {gain, delay}, right: {gain, delay}, center?: {...}, micResponses: {...}}
  */
-export function calculateStereoResponse(sourcePos, config, stageConfig) {
-  const {
-    width = 20,
-    depth = 15,
-    sourceHeight = 1.2,
-    micHeight = 1.5,
-  } = stageConfig;
+export function calculateStereoResponse(sourcePos, config, stageConfig = STAGE_CONFIG) {
+  const resolvedStage = stageConfig || STAGE_CONFIG;
+  const width = resolvedStage.width ?? STAGE_CONFIG.width;
+  const depth = resolvedStage.depth ?? STAGE_CONFIG.depth;
+  const sourceHeight = resolvedStage.sourceHeight ?? STAGE_CONFIG.sourceHeight;
+  const micHeight = resolvedStage.micHeight ?? STAGE_CONFIG.micHeight;
 
   // Convert normalized position to meters
   const sourcePosMeters = {

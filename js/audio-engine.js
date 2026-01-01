@@ -2213,7 +2213,6 @@ export class AudioEngine {
     const hasSolo = this.hasSolo;
     const technique = STEREO_TECHNIQUES[this.micConfig.technique];
     const hasCenter = technique?.hasCenter;
-    const groundModel = this.groundReflectionEnabled ? this.getGroundReflectionModelConfig() : null;
 
     for (const [, track] of this.tracks) {
       if (signal && signal.aborted) {
@@ -2369,40 +2368,14 @@ export class AudioEngine {
       }
 
       // Ground reflection
-      if (this.groundReflectionEnabled && groundModel) {
-        const groundDistL = this.calculateGroundReflectionDistance(
-          sourcePos, this.micL, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-        );
-        const groundDistR = this.calculateGroundReflectionDistance(
-          sourcePos, this.micR, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-        );
+      const groundParams = this._getGroundReflectionParams(spatial);
+      if (groundParams && groundParams.L && groundParams.R) {
+        const { lowGain, highGain, crossFreq } = groundParams;
 
-        // Ground reflection timing must match direct sound timing structure (baseDelay + ITD + groundExtra)
-        const groundTimeL = groundDistL / SPEED_OF_SOUND;
-        const groundTimeR = groundDistR / SPEED_OF_SOUND;
-        const groundExtraL = Math.max(0, groundTimeL - timeL);
-        const groundExtraR = Math.max(0, groundTimeR - timeR);
-
-        const lowGain = groundModel.lowGain * STAGE_CONFIG.groundReflectionCoeff;
-        const highGain = groundModel.highGain * STAGE_CONFIG.groundReflectionCoeff;
-        const crossFreq = groundModel.crossoverHz;
-        const refDist = 3; // Must match microphone-math.js refDistance
-
-        // Convert from direct-path attenuation to ground-path using pure 1/d law
-        // Ratio = groundGain / directGain = distL / groundDistL
-        const directGainL = refDist / distL;
-        const groundGainL = refDist / groundDistL;
-        // Apply polar pattern gain for ground reflection (mirror source angle)
-        const groundPolarL = calculateGroundReflectionPolarGain(
-          this.micLPattern, sourcePos, this.micL, this.micLAngle,
-          STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-        );
-        const patternRatioL = groundPolarL / safePatternGain(directPatternL);
-        const baseAmpL = (groundGainL / directGainL) * patternRatioL;
         const groundBaseGainL = offlineContext.createGain();
-        groundBaseGainL.gain.value = baseAmpL;
+        groundBaseGainL.gain.value = groundParams.L.baseAmp;
         const groundDelayL = offlineContext.createDelay(0.1);
-        groundDelayL.delayTime.value = baseDelay + itdL + groundExtraL;
+        groundDelayL.delayTime.value = groundParams.L.delayTime;
         const groundLowFilterL = offlineContext.createBiquadFilter();
         groundLowFilterL.type = 'lowpass';
         groundLowFilterL.frequency.value = crossFreq;
@@ -2417,12 +2390,11 @@ export class AudioEngine {
         groundHighGainL.gain.value = highGain;
         const groundSumL = offlineContext.createGain();
 
-        // Air absorption for ground reflection (longer path = more HF loss)
         const groundAbsorbL = this.createAirAbsorptionFilterBank(offlineContext);
-        const groundAbsorptionL = this.calculateAirAbsorption(groundDistL);
-        groundAbsorbL.forEach((filter, i) => { filter.gain.value = groundAbsorptionL[i].gainDb; });
+        groundParams.L.airAbsorption.forEach((filter, i) => {
+          groundAbsorbL[i].gain.value = filter.gainDb;
+        });
 
-        // Chain: mixer → baseGain → delay → airAbsorb[0..6] → low/high split → sum → output
         mixerL.connect(groundBaseGainL);
         groundBaseGainL.connect(groundDelayL);
         let prevGroundL = groundDelayL;
@@ -2438,18 +2410,10 @@ export class AudioEngine {
         groundHighGainL.connect(groundSumL);
         groundSumL.connect(stereoMerger, 0, 0);
 
-        const directGainR = refDist / distR;
-        const groundGainR = refDist / groundDistR;
-        const groundPolarR = calculateGroundReflectionPolarGain(
-          this.micRPattern, sourcePos, this.micR, this.micRAngle,
-          STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-        );
-        const patternRatioR = groundPolarR / safePatternGain(directPatternR);
-        const baseAmpR = (groundGainR / directGainR) * patternRatioR;
         const groundBaseGainR = offlineContext.createGain();
-        groundBaseGainR.gain.value = baseAmpR;
+        groundBaseGainR.gain.value = groundParams.R.baseAmp;
         const groundDelayR = offlineContext.createDelay(0.1);
-        groundDelayR.delayTime.value = baseDelay + itdR + groundExtraR;
+        groundDelayR.delayTime.value = groundParams.R.delayTime;
         const groundLowFilterR = offlineContext.createBiquadFilter();
         groundLowFilterR.type = 'lowpass';
         groundLowFilterR.frequency.value = crossFreq;
@@ -2464,10 +2428,10 @@ export class AudioEngine {
         groundHighGainR.gain.value = highGain;
         const groundSumR = offlineContext.createGain();
 
-        // Air absorption for ground reflection R
         const groundAbsorbR = this.createAirAbsorptionFilterBank(offlineContext);
-        const groundAbsorptionR = this.calculateAirAbsorption(groundDistR);
-        groundAbsorbR.forEach((filter, i) => { filter.gain.value = groundAbsorptionR[i].gainDb; });
+        groundParams.R.airAbsorption.forEach((filter, i) => {
+          groundAbsorbR[i].gain.value = filter.gainDb;
+        });
 
         mixerR.connect(groundBaseGainR);
         groundBaseGainR.connect(groundDelayR);
@@ -2484,25 +2448,11 @@ export class AudioEngine {
         groundHighGainR.connect(groundSumR);
         groundSumR.connect(stereoMerger, 0, 1);
 
-        if (hasCenter && mixerC && centerBus && this.micC && timeC !== null) {
-          const groundDistC = this.calculateGroundReflectionDistance(
-            sourcePos, this.micC, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-          );
-          const groundTimeC = groundDistC / SPEED_OF_SOUND;
-          const groundExtraC = Math.max(0, groundTimeC - timeC);
-
-          const directGainC = refDist / distC;
-          const groundGainC = refDist / groundDistC;
-          const groundPolarC = calculateGroundReflectionPolarGain(
-            this.micCPattern, sourcePos, this.micC, this.micCAngle,
-            STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-          );
-          const patternRatioC = groundPolarC / safePatternGain(directPatternC);
-          const baseAmpC = (groundGainC / directGainC) * patternRatioC;
+        if (hasCenter && mixerC && centerBus && groundParams.C) {
           const groundBaseGainC = offlineContext.createGain();
-          groundBaseGainC.gain.value = baseAmpC;
+          groundBaseGainC.gain.value = groundParams.C.baseAmp;
           const groundDelayC = offlineContext.createDelay(0.1);
-          groundDelayC.delayTime.value = baseDelay + itdC + groundExtraC;
+          groundDelayC.delayTime.value = groundParams.C.delayTime;
           const groundLowFilterC = offlineContext.createBiquadFilter();
           groundLowFilterC.type = 'lowpass';
           groundLowFilterC.frequency.value = crossFreq;
@@ -2517,10 +2467,10 @@ export class AudioEngine {
           groundHighGainC.gain.value = highGain;
           const groundSumC = offlineContext.createGain();
 
-          // Air absorption for ground reflection C
           const groundAbsorbC = this.createAirAbsorptionFilterBank(offlineContext);
-          const groundAbsorptionC = this.calculateAirAbsorption(groundDistC);
-          groundAbsorbC.forEach((filter, i) => { filter.gain.value = groundAbsorptionC[i].gainDb; });
+          groundParams.C.airAbsorption.forEach((filter, i) => {
+            groundAbsorbC[i].gain.value = filter.gainDb;
+          });
 
           mixerC.connect(groundBaseGainC);
           groundBaseGainC.connect(groundDelayC);

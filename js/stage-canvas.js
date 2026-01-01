@@ -12,7 +12,7 @@ import {
 } from './microphone-types.js';
 import { getPolarPatternPoints } from './microphone-math.js';
 import { getIconInfo, drawInstrumentIcon, getShapeBounds } from './instrument-icons.js';
-import { STAGE_CONFIG } from './audio-engine.js';
+import { STAGE_CONFIG, MIC_CONSTANTS } from './physics-constants.js';
 
 export class StageCanvas {
   constructor(canvas) {
@@ -328,10 +328,10 @@ export class StageCanvas {
   /**
    * Constrain track position to maintain minimum distance from all mics
    * @param {Object} pos - {x, y} normalized position
-   * @param {number} minDist - minimum distance in meters (default 0.5m)
+   * @param {number} minDist - minimum distance in meters
    * @returns {Object} - constrained {x, y} position
    */
-  constrainMinDistanceFromMics(pos, minDist = 0.5) {
+  constrainMinDistanceFromMics(pos, minDist = MIC_CONSTANTS.minDistance) {
     if (!this.micConfig) return pos;
 
     const stageWidth = STAGE_CONFIG.width;
@@ -794,8 +794,8 @@ export class StageCanvas {
       const newCanvasY = pos.y - this.dragOffset.y;
       let newPos = this.canvasToTrack(newCanvasX, newCanvasY);
 
-      // Enforce minimum distance from mics (0.5m)
-      newPos = this.constrainMinDistanceFromMics(newPos, 0.5);
+      // Enforce minimum distance from mics
+      newPos = this.constrainMinDistanceFromMics(newPos, MIC_CONSTANTS.minDistance);
 
       const track = this.tracks.get(this.dragTrackId);
       track.x = newPos.x;
@@ -984,8 +984,8 @@ export class StageCanvas {
       const newCanvasY = pos.y - this.dragOffset.y;
       let newPos = this.canvasToTrack(newCanvasX, newCanvasY);
 
-      // Enforce minimum distance from mics (0.5m)
-      newPos = this.constrainMinDistanceFromMics(newPos, 0.5);
+      // Enforce minimum distance from mics
+      newPos = this.constrainMinDistanceFromMics(newPos, MIC_CONSTANTS.minDistance);
 
       const track = this.tracks.get(this.dragTrackId);
       track.x = newPos.x;
