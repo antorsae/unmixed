@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  audio-sanity:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg unzip
+
+      - name: Unpack Mozart test set
+        run: |
+          mkdir -p temp/mozart-ci
+          unzip -q test-data/mozart_mp3.zip -d temp/mozart-ci
+
+      - name: Visual level sanity
+        run: node tools/ci-visual-levels.js temp/mozart-ci --max-start 0.05 --max-start-avg 0.02 --min-files 10
