@@ -2688,6 +2688,9 @@ function applySharedConfig(config) {
         track.gain = saved.gain ?? track.gain;
         track.muted = saved.muted ?? track.muted;
         track.solo = saved.solo ?? track.solo;
+
+        // Update audio engine's internal track (it maintains separate copy)
+        audioEngine.updateTrackPosition(id, track.x, track.y);
       }
     }
   }
