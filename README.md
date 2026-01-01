@@ -2,6 +2,8 @@
 
 A web-based audio mixer that simulates the physics of sound propagation in a concert hall environment. Load anechoic (echo-free) symphony orchestra recordings and position instruments on a virtual stage to create realistic stereo mixes.
 
+![Unmixed Mozart scene](docs/screenshot.png)
+
 ## Live Demo
 
 **[https://antorsae.github.io/unmixed/](https://antorsae.github.io/unmixed/)**
