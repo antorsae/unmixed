@@ -2495,7 +2495,7 @@ async function loadFromURL() {
       if (profileRadio) {
         profileRadio.checked = true;
         // Load the profile and apply config after
-        await loadProfile();
+        await loadSelectedProfile();
         applySharedConfig(config);
         showToast('Loaded shared configuration', 'success');
         // Clear hash to avoid re-loading on refresh
