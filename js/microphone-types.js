@@ -423,6 +423,13 @@ export function validateConfig(config) {
     validated.centerLevel = Math.max(min, Math.min(max, validated.centerLevel));
   }
 
+  // Enforce fixed pattern for techniques like Blumlein
+  if (technique.fixedPattern && Array.isArray(validated.mics)) {
+    for (const mic of validated.mics) {
+      mic.pattern = technique.fixedPattern;
+    }
+  }
+
   // Clamp micY (global limits)
   validated.micY = Math.max(-5, Math.min(-0.5, validated.micY));
 

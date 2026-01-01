@@ -52,6 +52,7 @@ export class StageCanvas {
     this.animationFrameId = null;
     this.trackLevels = new Map();  // trackId -> smoothed level (0..1)
     this.minDistancePixels = Infinity;
+    this.minDistanceDirty = true;
 
     // Callbacks
     this.onTrackMove = null;
@@ -70,7 +71,7 @@ export class StageCanvas {
     this.baseRadius = 18;
     this.minRadius = 12;
     this.maxRadius = 35;
-    this.padding = 40;
+    this.padding = 12;
     this.iconSize = 16;
     this.micIconSize = 24;
 
@@ -114,21 +115,27 @@ export class StageCanvas {
     // Calculate uniform scaling to maintain proper aspect ratio
     // Stage uses the shared config dimensions so 1m x 1m is always square
     const availableWidth = this.width - this.padding * 2;
-    const availableHeight = this.height - this.padding * 2 - 30; // 30px for title area
+    const availableHeight = this.height - this.padding * 2;
+
+    // Mic area based on actual mic position (negative = in front of stage)
+    const micY = Math.abs(this.micConfig?.micY ?? STAGE_CONFIG.micY);
+    const MIC_LEGEND_HEIGHT = 45; // Space for mic icon + technique label below
+    const totalDepth = STAGE_CONFIG.depth + micY;
 
     const pixelsPerMeterX = availableWidth / STAGE_CONFIG.width;
-    const pixelsPerMeterY = availableHeight / STAGE_CONFIG.depth;
+    const pixelsPerMeterY = (availableHeight - MIC_LEGEND_HEIGHT) / totalDepth;
 
-    // Use smaller scale to fit stage in available space
+    // Use smaller scale to fit stage + mic area in available space
     this.pixelsPerMeter = Math.min(pixelsPerMeterX, pixelsPerMeterY);
 
     // Calculate actual stage dimensions in pixels (with uniform scale)
     this.stagePixelWidth = this.pixelsPerMeter * STAGE_CONFIG.width;
     this.stagePixelHeight = this.pixelsPerMeter * STAGE_CONFIG.depth;
 
-    // Center the stage in the available space
+    // Center horizontally, stage at top
     this.stageOffsetX = this.padding + (availableWidth - this.stagePixelWidth) / 2;
-    this.stageOffsetY = this.padding + 30 + (availableHeight - this.stagePixelHeight) / 2;
+    this.stageOffsetY = this.padding;
+    this.minDistanceDirty = true;
 
     this.render();
   }
@@ -433,7 +440,7 @@ export class StageCanvas {
   setMicConfig(config) {
     this.micConfig = config;
     this.micSeparation = config.spacing || 2.0;
-    this.render();
+    this.resize();
   }
 
   /**
@@ -443,7 +450,7 @@ export class StageCanvas {
   setTechnique(techniqueId) {
     this.micConfig = createMicrophoneConfig(techniqueId);
     this.micSeparation = this.micConfig.spacing;
-    this.render();
+    this.resize();
   }
 
   /**
@@ -793,6 +800,7 @@ export class StageCanvas {
       const track = this.tracks.get(this.dragTrackId);
       track.x = newPos.x;
       track.y = newPos.y;
+      this.minDistanceDirty = true;
 
       if (this.onTrackMove) {
         this.onTrackMove(this.dragTrackId, newPos.x, newPos.y);
@@ -1098,6 +1106,7 @@ export class StageCanvas {
       iconInfo, // Cached icon info
     });
     // Don't update prefix on every add - call refreshCommonPrefix() after batch add
+    this.minDistanceDirty = true;
     this.render();
   }
 
@@ -1117,6 +1126,7 @@ export class StageCanvas {
     if (track) {
       track.x = x;
       track.y = y;
+      this.minDistanceDirty = true;
       this.render();
     }
   }
@@ -1161,6 +1171,7 @@ export class StageCanvas {
     this.tracks.delete(id);
     this.selectedIds.delete(id);
     this.updateCommonPrefix();
+    this.minDistanceDirty = true;
     this.render();
   }
 
@@ -1171,6 +1182,7 @@ export class StageCanvas {
     this.tracks.clear();
     this.selectedIds.clear();
     this.commonPrefix = '';
+    this.minDistanceDirty = true;
     this.render();
   }
 
@@ -1227,7 +1239,10 @@ export class StageCanvas {
     this.drawScaleIndicator();
     this.drawMicrophones();
 
-    this.minDistancePixels = this.computeMinDistancePixels();
+    if (this.minDistanceDirty) {
+      this.minDistancePixels = this.computeMinDistancePixels();
+      this.minDistanceDirty = false;
+    }
     const anySolo = Array.from(this.tracks.values()).some(track => track.solo);
     for (const [id, track] of this.tracks) {
       this.drawTrackNode(id, track, this.minDistancePixels, anySolo);
@@ -1283,28 +1298,22 @@ export class StageCanvas {
     }
     ctx.restore();
 
-    // Draw technique label and spacing info
+    // Draw technique label with spacing/angle info on single line
     ctx.save();
     ctx.font = '11px "SF Mono", Monaco, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#5a5247';
 
-    const techniqueName = technique?.name || 'Spaced Pair';
-    const labelY = (micL?.y || (this.height - this.padding + 20)) + this.micIconSize + 8;
-    ctx.fillText(techniqueName, centerX, labelY);
-
-    // Show spacing for applicable techniques
+    let label = technique?.name || 'Spaced Pair';
     if (technique?.adjustable?.spacing && this.micConfig.spacing) {
-      ctx.fillText(`${this.micConfig.spacing.toFixed(2)}m`, centerX, labelY + 14);
+      label += ` ${this.micConfig.spacing.toFixed(2)}m`;
     }
-    // Show angle for applicable techniques
     if (technique?.adjustable?.angle && this.micConfig.angle) {
-      const angleText = technique?.adjustable?.spacing
-        ? `${this.micConfig.angle}°`
-        : `${this.micConfig.angle}°`;
-      ctx.fillText(angleText, centerX, labelY + (technique?.adjustable?.spacing ? 28 : 14));
+      label += ` ${this.micConfig.angle}°`;
     }
+    const labelY = (micL?.y || (this.height - this.padding + 20)) + this.micIconSize + 8;
+    ctx.fillText(label, centerX, labelY);
     ctx.restore();
 
     // Draw polar patterns first (behind mic icons)

@@ -80,7 +80,8 @@
 
       <!-- Stage canvas -->
       <section id="stage-section">
-        <div id="hall-controls">
+        <div id="stage-area">
+          <div id="hall-controls">
           <div class="hall-control-block hall-controls-top-left">
             <div class="transport-buttons compact">
               <button id="rewind-btn" class="btn transport-btn" title="Rewind (R)">
@@ -216,6 +217,7 @@
               </div>
             </div>
           </div>
+
         </div>
 
         <canvas id="stage-canvas"></canvas>
@@ -224,6 +226,50 @@
           <span class="label-right">R</span>
           <span class="label-front">Front</span>
           <span class="label-back">Back</span>
+        </div>
+        </div>
+
+        <div id="xtc-dock">
+          <div class="xtc-panel">
+            <div class="xtc-controls">
+              <label class="checkbox-label">
+                <input type="checkbox" id="xtc-enabled">
+                Speaker XTC
+                <span class="xtc-hint">post, speakers only</span>
+              </label>
+            </div>
+            <div id="xtc-settings" class="xtc-settings hidden">
+              <div class="xtc-row">
+                <label for="xtc-strength">Strength</label>
+                <input type="range" id="xtc-strength" min="0" max="100" value="60" step="1">
+                <span id="xtc-strength-value">60%</span>
+              </div>
+              <div class="xtc-row">
+                <label for="xtc-angle">Speaker Angle</label>
+                <input type="range" id="xtc-angle" min="15" max="60" value="30" step="1">
+                <span id="xtc-angle-value">30°</span>
+              </div>
+              <div class="xtc-row">
+                <label for="xtc-distance">Speaker Distance</label>
+                <input type="range" id="xtc-distance" min="0.5" max="4" value="1.5" step="0.1">
+                <span id="xtc-distance-value">1.50 m</span>
+              </div>
+              <div class="xtc-row">
+                <label for="xtc-head-width">Head Width</label>
+                <input type="range" id="xtc-head-width" min="12" max="24" value="18" step="0.5">
+                <span id="xtc-head-width-value">18 cm</span>
+              </div>
+              <div class="xtc-row">
+                <label for="xtc-hf">HF Rolloff</label>
+                <input type="range" id="xtc-hf" min="800" max="8000" value="2200" step="50">
+                <span id="xtc-hf-value">2200 Hz</span>
+              </div>
+              <div class="xtc-readout">
+                <span>Delay: <span id="xtc-delay-value">0.00 ms</span></span>
+                <span>Cross Gain: <span id="xtc-gain-value">-inf dB</span></span>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </main>

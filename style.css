@@ -123,7 +123,7 @@ body {
   animation-delay: 0.1s;
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 12px;
   position: relative;
   min-height: 460px;
   overflow: hidden;
@@ -405,6 +405,13 @@ button.primary:hover {
 }
 
 /* Stage */
+#stage-area {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 380px;
+}
+
 #stage-canvas {
   width: 100%;
   flex: 1;
@@ -419,7 +426,7 @@ button.primary:hover {
 
 #stage-labels {
   position: absolute;
-  inset: 16px;
+  inset: 0;
   pointer-events: none;
   font-size: 11px;
   color: var(--ink-soft);
@@ -430,7 +437,7 @@ button.primary:hover {
 
 #hall-controls {
   position: absolute;
-  inset: 16px;
+  inset: 0;
   display: grid;
   grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr);
   grid-template-rows: auto 1fr;
@@ -473,7 +480,7 @@ button.primary:hover {
   grid-area: bottom-left;
   justify-self: start;
   align-self: end;
-  max-width: 420px;
+  max-width: 320px;
 }
 
 .hall-controls-bottom-right {
@@ -542,13 +549,6 @@ button.primary:hover {
   transform: translateY(-50%);
 }
 
-#stage-labels .label-center {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-}
-
 #stage-labels .label-front {
   position: absolute;
   left: 50%;
@@ -563,6 +563,13 @@ button.primary:hover {
   top: 8px;
   transform: translateX(-50%);
   font-size: 10px;
+}
+
+#stage-labels .label-center {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
 }
 
 #stage-labels .label-audience {
@@ -1041,6 +1048,84 @@ button.primary:hover {
 .mic-angle-control.hidden,
 .mic-spacing-control.hidden {
   display: none;
+}
+
+.xtc-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin-top: 6px;
+}
+
+.xtc-hint {
+  font-size: 11px;
+  color: var(--ink-soft);
+  opacity: 0.7;
+}
+
+.xtc-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px dashed var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255, 245, 232, 0.85);
+  width: 100%;
+  max-width: 520px;
+  box-sizing: border-box;
+}
+
+.xtc-settings.hidden {
+  display: none;
+}
+
+.xtc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.xtc-row input[type="range"] {
+  width: 90px;
+  accent-color: var(--accent);
+}
+
+.xtc-row span {
+  min-width: 70px;
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: 12px;
+}
+
+.xtc-readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  font-family: "SF Mono", Monaco, monospace;
+}
+
+.xtc-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 560px;
+}
+
+#xtc-dock {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  padding: 0 8px 8px;
 }
 
 /* Legacy mic separation (compatibility) */

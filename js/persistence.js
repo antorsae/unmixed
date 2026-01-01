@@ -18,6 +18,8 @@ const defaultState = {
   reverbMode: 'depth',
   reverbWetDb: 0,
   groundReflectionModel: 'stage',
+  xtcEnabled: false,
+  xtcConfig: null,
   savedAt: null,
 };
 
@@ -148,6 +150,8 @@ export function createSessionState(appState) {
     groundReflectionModel: appState.groundReflectionModel,
     noiseGateEnabled: appState.noiseGateEnabled,
     noiseGateThreshold: appState.noiseGateThreshold,
+    xtcEnabled: appState.xtcEnabled,
+    xtcConfig: appState.xtcConfig,
   };
 }
 

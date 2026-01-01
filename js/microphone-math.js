@@ -7,6 +7,7 @@ import { STAGE_CONFIG, MIC_CONSTANTS } from './physics-constants.js';
 // Speed of sound at 20°C
 const SPEED_OF_SOUND = 343;
 const layoutCache = new WeakMap();
+const polarPointsCache = new Map();
 
 function getLayoutConfig(config) {
   if (!config) return config;
@@ -384,6 +385,10 @@ function applyMSDecode(leftGain, rightGain, width) {
  * @returns {Array} Array of {x, y, gain} points
  */
 export function getPolarPatternPoints(patternType, steps = 72) {
+  const cacheKey = `${patternType}:${steps}`;
+  const cached = polarPointsCache.get(cacheKey);
+  if (cached) return cached;
+
   const points = [];
 
   for (let i = 0; i <= steps; i++) {
@@ -409,57 +414,8 @@ export function getPolarPatternPoints(patternType, steps = 72) {
     });
   }
 
+  polarPointsCache.set(cacheKey, points);
   return points;
-}
-
-/**
- * Get the characteristic angles for a polar pattern
- * (null angle for figure-8 sides, rear rejection, etc.)
- *
- * @param {string} patternType - Pattern type ID
- * @returns {Object} {nullAngles, maxRejection, acceptanceAngle}
- */
-export function getPatternCharacteristics(patternType) {
-  const pattern = POLAR_PATTERNS[patternType];
-  if (!pattern) return null;
-
-  const alpha = pattern.alpha;
-
-  // Find null angles (where gain = 0)
-  // 0 = alpha + (1-alpha)*cos(theta)
-  // cos(theta) = -alpha / (1-alpha)
-  const nullAngles = [];
-
-  if (alpha < 1) {
-    const cosNull = -alpha / (1 - alpha);
-    if (cosNull >= -1 && cosNull <= 1) {
-      const nullAngle = Math.acos(cosNull) * 180 / Math.PI;
-      nullAngles.push(nullAngle);
-      nullAngles.push(360 - nullAngle);
-    }
-  }
-
-  // Rear rejection (gain at 180°)
-  const rearGain = calculatePolarGain(patternType, Math.PI);
-  const rearRejectionDb = rearGain === 0 ? -Infinity : 20 * Math.log10(Math.abs(rearGain));
-
-  // -3dB acceptance angle (where gain drops to 0.707)
-  let acceptanceAngle = 180; // Default for omni
-  if (alpha < 1) {
-    // 0.707 = alpha + (1-alpha)*cos(theta)
-    // cos(theta) = (0.707 - alpha) / (1-alpha)
-    const cos3dB = (0.707 - alpha) / (1 - alpha);
-    if (cos3dB >= -1 && cos3dB <= 1) {
-      acceptanceAngle = Math.acos(cos3dB) * 180 / Math.PI * 2; // Full angle
-    }
-  }
-
-  return {
-    nullAngles,
-    rearRejectionDb,
-    acceptanceAngle,
-    isBidirectional: pattern.isBidirectional || false,
-  };
 }
 
 /**
