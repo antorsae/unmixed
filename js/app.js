@@ -548,9 +548,15 @@ async function loadProfile(profileKey, url, displayName) {
     const profile = PROFILES[profileKey];
     if (isCorsError && profile?.url) {
       const filename = profile.url.split('/').pop();
-      const msg = `Download failed. <a href="${profile.url}" target="_blank" rel="noopener">Download ${filename}</a> manually, then upload below.`;
+      const msg = `Download failed. <button id="retry-download-btn" class="btn-link">Retry</button> or <a href="${profile.url}" target="_blank" rel="noopener">download ${filename}</a> manually, then upload below.`;
       setStatus(msg, 'error');
       showToast('Automatic download failed. See instructions above.', 'error');
+
+      // Add retry handler
+      const retryBtn = document.getElementById('retry-download-btn');
+      if (retryBtn) {
+        retryBtn.onclick = () => loadProfile(profileKey, url, displayName);
+      }
 
       // Change "OR" to "AND" to guide user
       const divider = document.querySelector('#profile-upload-divider span');

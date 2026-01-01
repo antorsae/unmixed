@@ -237,6 +237,20 @@ button.primary:hover {
   background: #fff4e6;
 }
 
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.btn-link:hover {
+  color: var(--accent-dark);
+}
+
 /* Progress */
 #load-progress {
   margin: 16px 0 12px;
