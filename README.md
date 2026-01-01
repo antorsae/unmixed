@@ -148,7 +148,7 @@ The interactive stage canvas provides intuitive control:
 The Aalto anechoic recordings were made with uniform gain settings across all instruments, preserving natural orchestral dynamics but resulting in very quiet levels for softer instruments. The built-in noise gate addresses background noise while preserving these natural dynamics:
 
 - **Manual Enabling**: Noise gate is available but off by default
-- **Adjustable Threshold**: -75dB to -55dB range (default -70dB)
+- **Adjustable Threshold**: -75dB to -55dB range (default -74dB)
 - **Optimized for Aalto Recordings**: Threshold calibrated via analysis of all four symphonic works
 - **Shared Envelope Processing**: Directivity buffers (front/bell mics) use unified envelope for coherent imaging
 - **Professional Parameters**: 5ms attack, 100ms hold, 80ms release for musical gating
@@ -157,21 +157,21 @@ The Aalto anechoic recordings were made with uniform gain settings across all in
 
 #### Aalto Recording Level Analysis
 
-The threshold was determined by analyzing noise floor (silence) vs RMS peak (playing) across all instruments in the four symphonic works:
+The threshold was determined by analyzing the windowed RMS distribution (100ms windows), using p10 as a noise-floor proxy and p90 as the soft‑playing signal level across all instruments in the four symphonic works:
 
-| Recording | Tracks | Noise Floor Range | RMS Peak Range | Quietest Signal |
-|-----------|-------:|------------------:|---------------:|----------------:|
-| **Beethoven** | 25 | -77 to -128 dB | -24 to -47 dB | -46.9 dB (Bassoon 2) |
-| **Bruckner** | 58 | -75 to -114 dB | -20 to -55 dB | -54.9 dB (Violin 1b) |
-| **Mahler** | 50 | -75 to -101 dB | -18 to -44 dB | -44.1 dB (Violin 1b) |
-| **Mozart** | 14 | -77 to -132 dB | -31 to -50 dB | -50.0 dB (Violin 2) |
+| Recording | Tracks | p10 Noise Floor Range | p90 Signal Range | Quietest p90 |
+|-----------|-------:|----------------------:|-----------------:|-------------:|
+| **Beethoven** | 25 | -86.2 to -83.2 dB | -54.1 to -34.9 dB | -54.1 dB (Violin 2b) |
+| **Bruckner** | 58 | -86.3 to -72.5 dB | -60.1 to -30.7 dB | -60.1 dB (Violin 1b) |
+| **Mahler** | 50 | -86.3 to -83.3 dB | -53.2 to -24.6 dB | -53.2 dB (Percussion 2) |
+| **Mozart** | 14 | -86.2 to -82.3 dB | -58.6 to -39.9 dB | -58.6 dB (Violin 2) |
 
 **Key findings:**
-- Highest noise floor across all recordings: **-75.0 dB** (Bruckner bassoons)
-- Quietest musical signal (RMS peak): **-54.9 dB** (Bruckner violin 1b)
-- Gap between noise and signal: **20.1 dB**
+- Highest p10 noise floor across all recordings: **-72.5 dB** (Bruckner vcb_6)
+- Quietest p90 signal: **-60.1 dB** (Bruckner violin 1b)
+- Gap between noise and signal: **12.4 dB**
 
-The default threshold of **-70 dB** sits safely in this gap—15 dB above the highest noise floor and 15 dB below the quietest signal—ensuring no musical content is gated while still suppressing background noise during rests
+The default threshold of **-74 dB** is intentionally conservative: it sits slightly below the highest noise floor, ensuring no musical content is gated across all four works. For more aggressive noise reduction on noisier recordings, raising the threshold toward **-69 dB** (30% into the gap) is recommended.
 
 ### Reverb System
 

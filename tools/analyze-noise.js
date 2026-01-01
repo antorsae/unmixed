@@ -12,97 +12,19 @@
  * Usage: node tools/analyze-noise.js [directory] [--threshold=-48]
  */
 
-const { execSync, spawn } = require('child_process');
-const fs = require('fs');
 const path = require('path');
+const {
+  listAudioFiles,
+  getAudioInfo,
+  getVolumeStats,
+  getWindowRmsLevels,
+  summarizeLevels,
+  averageOfLowest,
+} = require('./audio-analysis-utils');
 
 // Configuration
-const WINDOW_MS = 20;  // RMS window size in ms (matches noise gate windowMs)
+const WINDOW_MS = 100;  // Analysis window size in ms (p90-based distribution)
 const DEFAULT_THRESHOLD_DB = -48;
-
-/**
- * Get audio stats using ffmpeg astats filter
- */
-function getAudioStats(filePath) {
-  try {
-    const result = execSync(
-      `ffprobe -v quiet -print_format json -show_format -show_streams "${filePath}"`,
-      { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
-    );
-    return JSON.parse(result);
-  } catch (e) {
-    console.error(`Error getting stats for ${filePath}:`, e.message);
-    return null;
-  }
-}
-
-/**
- * Analyze RMS levels using ffmpeg volumedetect and ebur128
- */
-function analyzeVolume(filePath) {
-  try {
-    // Get overall volume stats
-    const volumeResult = execSync(
-      `ffmpeg -i "${filePath}" -af "volumedetect" -f null - 2>&1`,
-      { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
-    );
-
-    const meanMatch = volumeResult.match(/mean_volume:\s*([-\d.]+)\s*dB/);
-    const maxMatch = volumeResult.match(/max_volume:\s*([-\d.]+)\s*dB/);
-
-    return {
-      meanVolume: meanMatch ? parseFloat(meanMatch[1]) : null,
-      maxVolume: maxMatch ? parseFloat(maxMatch[1]) : null,
-    };
-  } catch (e) {
-    console.error(`Error analyzing volume for ${filePath}:`, e.message);
-    return { meanVolume: null, maxVolume: null };
-  }
-}
-
-/**
- * Get per-frame RMS levels using ffmpeg astats
- */
-function getFrameRmsLevels(filePath, windowMs = WINDOW_MS) {
-  return new Promise((resolve, reject) => {
-    const rmsLevels = [];
-
-    // Use astats with reset to get per-window RMS
-    // metadata=1 prints stats, reset=1 resets after each window
-    const sampleRate = 44100;  // Assume 44.1kHz, adjust if needed
-    const windowSamples = Math.floor(sampleRate * windowMs / 1000);
-
-    const ffmpeg = spawn('ffmpeg', [
-      '-i', filePath,
-      '-af', `astats=metadata=1:reset=${windowSamples}`,
-      '-f', 'null',
-      '-'
-    ], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-    let stderr = '';
-
-    ffmpeg.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    ffmpeg.on('close', (code) => {
-      // Parse RMS levels from astats output
-      // Format: [Parsed_astats_0 @ ...] RMS level dB: -XX.XX
-      const rmsMatches = stderr.matchAll(/RMS level dB:\s*([-\d.]+|inf|-inf)/g);
-      for (const match of rmsMatches) {
-        const level = match[1] === '-inf' ? -100 :
-                      match[1] === 'inf' ? 0 :
-                      parseFloat(match[1]);
-        if (!isNaN(level)) {
-          rmsLevels.push(level);
-        }
-      }
-      resolve(rmsLevels);
-    });
-
-    ffmpeg.on('error', reject);
-  });
-}
 
 /**
  * Analyze a single audio file
@@ -112,17 +34,13 @@ async function analyzeFile(filePath, thresholdDb) {
   console.log(`\nAnalyzing: ${fileName}`);
 
   // Get basic stats
-  const stats = getAudioStats(filePath);
-  if (!stats) return null;
-
-  const duration = parseFloat(stats.format?.duration || 0);
-  const sampleRate = parseInt(stats.streams?.[0]?.sample_rate || 44100);
+  const { duration, sampleRate } = getAudioInfo(filePath);
 
   // Get overall volume
-  const volume = analyzeVolume(filePath);
+  const volume = getVolumeStats(filePath);
 
   // Get per-frame RMS levels
-  const rmsLevels = await getFrameRmsLevels(filePath);
+  const rmsLevels = await getWindowRmsLevels(filePath, WINDOW_MS, { sampleRate });
 
   if (rmsLevels.length === 0) {
     console.log(`  Warning: Could not extract RMS levels`);
@@ -135,18 +53,17 @@ async function analyzeFile(filePath, thresholdDb) {
     };
   }
 
-  // Sort for percentile analysis
-  const sortedRms = [...rmsLevels].sort((a, b) => a - b);
+  const summary = summarizeLevels(rmsLevels, [0.1, 0.25, 0.5, 0.75, 0.9, 0.95]);
+  const sortedRms = summary.sorted;
 
   // Calculate statistics
-  const noiseFloor = sortedRms[Math.floor(sortedRms.length * 0.05)];  // 5th percentile
-  const quietestWindows = sortedRms.slice(0, Math.floor(sortedRms.length * 0.1));
-  const avgNoiseFloor = quietestWindows.reduce((a, b) => a + b, 0) / quietestWindows.length;
-
-  const median = sortedRms[Math.floor(sortedRms.length * 0.5)];
-  const p25 = sortedRms[Math.floor(sortedRms.length * 0.25)];
-  const p75 = sortedRms[Math.floor(sortedRms.length * 0.75)];
-  const p95 = sortedRms[Math.floor(sortedRms.length * 0.95)];
+  const avgNoiseFloor = averageOfLowest(sortedRms, 0.1);
+  const p10 = summary.p10;
+  const p25 = summary.p25;
+  const median = summary.p50;
+  const p75 = summary.p75;
+  const p90 = summary.p90;
+  const p95 = summary.p95;
 
   // Count windows below threshold
   const belowThreshold = rmsLevels.filter(l => l < thresholdDb).length;
@@ -165,9 +82,10 @@ async function analyzeFile(filePath, thresholdDb) {
   }
   const longestSilentMs = longestSilentRun * WINDOW_MS;
 
-  // Recommend threshold: 6dB below the 10th percentile quietest signal
-  const p10 = sortedRms[Math.floor(sortedRms.length * 0.1)];
-  const recommendedThreshold = Math.floor(p10 - 6);
+  // Recommended threshold: 30% into the gap between p10 (noise) and p90 (signal)
+  const recommendedThreshold = (Number.isFinite(p10) && Number.isFinite(p90))
+    ? Math.round(p10 + (p90 - p10) * 0.3)
+    : null;
 
   return {
     fileName,
@@ -175,11 +93,12 @@ async function analyzeFile(filePath, thresholdDb) {
     sampleRate,
     meanVolume: volume.meanVolume?.toFixed(1),
     maxVolume: volume.maxVolume?.toFixed(1),
-    noiseFloor: noiseFloor?.toFixed(1),
+    noiseFloor: p10?.toFixed(1),
     avgNoiseFloor: avgNoiseFloor?.toFixed(1),
     p25: p25?.toFixed(1),
     median: median?.toFixed(1),
     p75: p75?.toFixed(1),
+    p90: p90?.toFixed(1),
     p95: p95?.toFixed(1),
     pctBelowThreshold,
     longestSilentMs,
@@ -213,10 +132,7 @@ async function main() {
   console.log('='.repeat(80));
 
   // Find all MP3 files
-  const files = fs.readdirSync(directory)
-    .filter(f => f.endsWith('.mp3'))
-    .map(f => path.join(directory, f))
-    .sort();
+  const files = listAudioFiles(directory);
 
   if (files.length === 0) {
     console.log('No MP3 files found in', directory);
@@ -239,19 +155,20 @@ async function main() {
   console.log('SUMMARY TABLE');
   console.log('='.repeat(80));
   console.log('');
-  console.log('Track                   | Mean dB | Max dB | Noise Floor | % Below Thresh | Longest Silent | Recommended');
-  console.log('------------------------|---------|--------|-------------|----------------|----------------|------------');
+  console.log('Track                   | Mean dB | Max dB | p10   | p90   | % Below Thresh | Longest Silent | Recommended');
+  console.log('------------------------|---------|--------|-------|-------|----------------|----------------|------------');
 
   for (const r of results) {
     const name = r.fileName.replace('.mp3', '').padEnd(23).slice(0, 23);
     const mean = (r.meanVolume || 'N/A').toString().padStart(7);
     const max = (r.maxVolume || 'N/A').toString().padStart(6);
-    const floor = (r.avgNoiseFloor || 'N/A').toString().padStart(11);
+    const p10 = (r.noiseFloor || 'N/A').toString().padStart(5);
+    const p90 = (r.p90 || 'N/A').toString().padStart(5);
     const pct = (r.pctBelowThreshold || 'N/A').toString().padStart(14) + '%';
     const silent = (r.longestSilentMs + 'ms').padStart(14);
-    const rec = (r.recommendedThreshold + 'dB').padStart(10);
+    const rec = (r.recommendedThreshold !== null ? `${r.recommendedThreshold}dB` : 'N/A').padStart(10);
 
-    console.log(`${name} | ${mean} | ${max} | ${floor} | ${pct} | ${silent} | ${rec}`);
+    console.log(`${name} | ${mean} | ${max} | ${p10} | ${p90} | ${pct} | ${silent} | ${rec}`);
   }
 
   // Analysis
@@ -259,20 +176,31 @@ async function main() {
   console.log('ANALYSIS');
   console.log('='.repeat(80));
 
-  const avgNoiseFloors = results.map(r => parseFloat(r.avgNoiseFloor)).filter(x => !isNaN(x));
-  const overallNoiseFloor = avgNoiseFloors.reduce((a, b) => a + b, 0) / avgNoiseFloors.length;
+  const noiseFloors = results.map(r => parseFloat(r.noiseFloor)).filter(x => !isNaN(x));
+  const signals = results.map(r => parseFloat(r.p90)).filter(x => !isNaN(x));
+  const overallNoiseFloor = noiseFloors.length
+    ? noiseFloors.reduce((a, b) => a + b, 0) / noiseFloors.length
+    : NaN;
+  const overallSignal = signals.length
+    ? signals.reduce((a, b) => a + b, 0) / signals.length
+    : NaN;
 
   const avgPctBelow = results.map(r => parseFloat(r.pctBelowThreshold)).filter(x => !isNaN(x));
-  const overallPctBelow = avgPctBelow.reduce((a, b) => a + b, 0) / avgPctBelow.length;
+  const overallPctBelow = avgPctBelow.length
+    ? avgPctBelow.reduce((a, b) => a + b, 0) / avgPctBelow.length
+    : NaN;
 
   const recommendedThresholds = results.map(r => r.recommendedThreshold).filter(x => x != null);
-  const maxRecommended = Math.max(...recommendedThresholds);
-  const minRecommended = Math.min(...recommendedThresholds);
+  const maxRecommended = recommendedThresholds.length ? Math.max(...recommendedThresholds) : null;
+  const minRecommended = recommendedThresholds.length ? Math.min(...recommendedThresholds) : null;
 
   console.log(`\nCurrent threshold: ${thresholdDb} dB`);
-  console.log(`Average noise floor across tracks: ${overallNoiseFloor.toFixed(1)} dB`);
+  console.log(`Average p10 noise floor: ${overallNoiseFloor.toFixed(1)} dB`);
+  console.log(`Average p90 signal level: ${overallSignal.toFixed(1)} dB`);
   console.log(`Average % of audio below threshold: ${overallPctBelow.toFixed(1)}%`);
-  console.log(`\nPer-track recommended thresholds range: ${minRecommended} dB to ${maxRecommended} dB`);
+  if (minRecommended !== null && maxRecommended !== null) {
+    console.log(`\nPer-track recommended thresholds range: ${minRecommended} dB to ${maxRecommended} dB`);
+  }
 
   // Check for problematic tracks
   const problematicTracks = results.filter(r => parseFloat(r.pctBelowThreshold) > 30);
@@ -289,27 +217,34 @@ async function main() {
   console.log('ROOT CAUSE ANALYSIS');
   console.log('-'.repeat(80));
 
-  if (overallNoiseFloor > thresholdDb) {
-    console.log(`\n❌ ISSUE: Average noise floor (${overallNoiseFloor.toFixed(1)} dB) is ABOVE threshold (${thresholdDb} dB)`);
-    console.log('   This means the gate threshold is set too high - it will gate actual signal, not just noise.');
-    console.log(`   RECOMMENDATION: Lower threshold to at least ${Math.floor(overallNoiseFloor - 6)} dB`);
-  } else {
-    const margin = thresholdDb - overallNoiseFloor;
-    console.log(`\n✓ Noise floor (${overallNoiseFloor.toFixed(1)} dB) is ${margin.toFixed(1)} dB below threshold (${thresholdDb} dB)`);
+  const worstNoiseFloor = noiseFloors.length ? Math.max(...noiseFloors) : null;
+  const quietestSignal = signals.length ? Math.min(...signals) : null;
 
-    if (margin < 6) {
-      console.log('   ⚠️  WARNING: Margin is thin - quiet passages may be incorrectly gated');
-    }
-  }
+  if (Number.isFinite(worstNoiseFloor) && Number.isFinite(quietestSignal)) {
+    const gap = quietestSignal - worstNoiseFloor;
+    const idealThreshold = Math.round(worstNoiseFloor + gap * 0.3);
+    const safeThreshold = Math.round(worstNoiseFloor + 3);
 
-  // Check quiet instruments
-  const quietTracks = results.filter(r => parseFloat(r.meanVolume) < -30);
-  if (quietTracks.length > 0) {
-    console.log('\n📉 QUIET INSTRUMENTS (mean < -30 dB):');
-    for (const t of quietTracks) {
-      console.log(`   - ${t.fileName}: mean ${t.meanVolume} dB, noise floor ${t.avgNoiseFloor} dB`);
+    console.log(`\nWorst (highest) noise floor: ${worstNoiseFloor.toFixed(1)} dB`);
+    console.log(`Quietest p90 signal: ${quietestSignal.toFixed(1)} dB`);
+    console.log(`Gap between them: ${gap.toFixed(1)} dB`);
+
+    if (thresholdDb > quietestSignal) {
+      console.log(`\n❌ ISSUE: Threshold (${thresholdDb} dB) is ABOVE the quietest p90 signal (${quietestSignal.toFixed(1)} dB)`);
+      console.log('   This means the gate threshold is set too high and will gate actual music.');
+    } else if (thresholdDb < worstNoiseFloor) {
+      console.log(`\n⚠️  Threshold (${thresholdDb} dB) is BELOW the noise floor (${worstNoiseFloor.toFixed(1)} dB).`);
+      console.log('   This may not gate noise effectively.');
+    } else {
+      const marginToSignal = quietestSignal - thresholdDb;
+      const marginToNoise = thresholdDb - worstNoiseFloor;
+      console.log(`\n✓ Threshold sits between noise and signal.`);
+      console.log(`   Margin to signal: ${marginToSignal.toFixed(1)} dB`);
+      console.log(`   Margin to noise: ${marginToNoise.toFixed(1)} dB`);
     }
-    console.log('   These quiet instruments are most likely to be incorrectly gated.');
+
+    console.log(`\nIdeal threshold (30% into gap): ${idealThreshold} dB`);
+    console.log(`Safe threshold (3dB above noise): ${safeThreshold} dB`);
   }
 
   // Final recommendation
@@ -317,14 +252,9 @@ async function main() {
   console.log('RECOMMENDATION');
   console.log('='.repeat(80));
 
-  const safeThreshold = Math.floor(Math.min(...avgNoiseFloors) - 6);
-  console.log(`\nSafe threshold for ALL tracks: ${safeThreshold} dB`);
-  console.log(`(This is 6 dB below the quietest track's noise floor)`);
-
-  if (safeThreshold > -60) {
-    console.log(`\n💡 If ${safeThreshold} dB still gates too aggressively, the actual signal`);
-    console.log('   in quiet passages may be at or below the recording noise floor.');
-    console.log('   Consider disabling noise gate for these recordings.');
+  if (Number.isFinite(worstNoiseFloor)) {
+    const conservative = Math.round(worstNoiseFloor);
+    console.log(`\nConservative threshold (at noise floor): ${conservative} dB`);
   }
 }
 

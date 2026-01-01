@@ -2969,7 +2969,7 @@ async function restoreSession() {
   state.groundReflectionEnabled = session.groundReflectionEnabled ?? false;
   state.groundReflectionModel = session.groundReflectionModel ?? state.groundReflectionModel;
   state.noiseGateEnabled = session.noiseGateEnabled ?? false;
-  state.noiseGateThreshold = session.noiseGateThreshold ?? -70;
+  state.noiseGateThreshold = session.noiseGateThreshold ?? DEFAULT_NOISE_GATE_OPTIONS.thresholdDb;
   state.showPolarPatterns = true;
   // Restore mic config if available, otherwise use default
   if (session.micConfig) {

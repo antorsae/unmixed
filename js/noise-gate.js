@@ -29,7 +29,7 @@ export function copyAudioBuffer(buffer) {
  * Default noise gate options
  */
 export const DEFAULT_NOISE_GATE_OPTIONS = {
-  thresholdDb: -70,
+  thresholdDb: -74,
   attackMs: 5,
   holdMs: 100,
   releaseMs: 80,
