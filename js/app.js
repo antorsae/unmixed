@@ -55,6 +55,9 @@ let renderAbortController = null;
 // Debounced save function (created once, reused)
 let debouncedSaveSession = null;
 
+// Pending shared config (for URL sharing and CORS fallback)
+let pendingSharedConfig = null;
+
 // DOM elements
 const elements = {};
 
@@ -129,7 +132,7 @@ async function init() {
   // Check for shared config in URL (takes priority over saved session)
   const hasSharedURL = location.hash.startsWith('#c=');
   if (hasSharedURL) {
-    await loadFromURL();
+    loadFromURL(); // Shows confirmation modal
   } else if (hasSession()) {
     // Only show restore modal if no shared URL
     showRestoreModal();
@@ -219,6 +222,10 @@ function cacheElements() {
   elements.restoreModal = document.getElementById('restore-modal');
   elements.restoreYesBtn = document.getElementById('restore-yes-btn');
   elements.restoreNoBtn = document.getElementById('restore-no-btn');
+  elements.shareModal = document.getElementById('share-modal');
+  elements.shareModalDetails = document.getElementById('share-modal-details');
+  elements.shareLoadBtn = document.getElementById('share-load-btn');
+  elements.shareCancelBtn = document.getElementById('share-cancel-btn');
   elements.mobileWarning = document.getElementById('mobile-warning');
   elements.dismissMobileWarning = document.getElementById('dismiss-mobile-warning');
   elements.noiseGateCheckbox = document.getElementById('noise-gate-checkbox');
@@ -292,6 +299,10 @@ function setupEventListeners() {
     clearSession();
     hideRestoreModal();
   });
+
+  // Share modal
+  elements.shareLoadBtn?.addEventListener('click', confirmSharedConfig);
+  elements.shareCancelBtn?.addEventListener('click', cancelSharedConfig);
 
   // Mobile warning
   elements.dismissMobileWarning?.addEventListener('click', () => {
@@ -600,6 +611,13 @@ async function handleZipFile(file) {
     updateProfileName();
     enableExportButtons();
 
+    // Apply pending shared config if CORS fallback was used
+    if (pendingSharedConfig && state.tracks.size > 0) {
+      applySharedConfig(pendingSharedConfig);
+      showToast('Applied shared arrangement settings', 'success');
+      pendingSharedConfig = null;
+    }
+
   } catch (error) {
     console.error('Failed to load ZIP:', error);
     setStatus(error.message, 'error');
@@ -687,6 +705,13 @@ async function loadFilesArray(files) {
     setStatus(`Loaded ${state.tracks.size} tracks`, 'success');
     updateProfileName();
     enableExportButtons();
+
+    // Apply pending shared config if CORS fallback was used
+    if (pendingSharedConfig && state.tracks.size > 0) {
+      applySharedConfig(pendingSharedConfig);
+      showToast('Applied shared arrangement settings', 'success');
+      pendingSharedConfig = null;
+    }
 
   } catch (error) {
     console.error('Failed to load files:', error);
@@ -2471,9 +2496,9 @@ function getShareableURL() {
 }
 
 /**
- * Load config from URL hash
+ * Load config from URL hash - shows confirmation modal
  */
-async function loadFromURL() {
+function loadFromURL() {
   const hash = location.hash;
   if (!hash.startsWith('#c=')) return false;
 
@@ -2489,28 +2514,152 @@ async function loadFromURL() {
     const json = pako.inflate(compressed, { to: 'string' });
     const config = JSON.parse(json);
 
-    // Auto-load the profile if specified
-    if (config.profile && !state.tracks.size) {
-      const profile = PROFILES[config.profile];
-      if (profile) {
-        // Update radio button for visual consistency
-        const profileRadio = document.querySelector(`input[name="profile"][value="${config.profile}"]`);
-        if (profileRadio) profileRadio.checked = true;
-
-        // Load the profile directly from config
-        await loadProfile(config.profile, profile.url, profile.fullName);
-        applySharedConfig(config);
-        showToast('Loaded shared configuration', 'success');
-        // Clear hash to avoid re-loading on refresh
-        history.replaceState(null, '', location.pathname);
-        return true;
-      }
+    // Validate profile exists
+    if (!config.profile || !PROFILES[config.profile]) {
+      showToast('Invalid shared configuration', 'error');
+      return false;
     }
+
+    // Store pending config and show confirmation modal
+    pendingSharedConfig = config;
+    const summary = buildConfigSummary(config);
+    elements.shareModalDetails.innerHTML = summary;
+    showShareModal();
+    return true;
   } catch (error) {
     console.error('Failed to load config from URL:', error);
     showToast('Failed to load shared configuration', 'error');
   }
   return false;
+}
+
+/**
+ * Build human-readable summary of shared config
+ */
+function buildConfigSummary(config) {
+  const profile = PROFILES[config.profile];
+  const lines = [];
+
+  // Recording name
+  lines.push(`<p><strong>Recording:</strong> ${profile?.fullName || config.profile}</p>`);
+  lines.push('<ul class="config-summary">');
+
+  // Track settings
+  if (config.tracks) {
+    const trackCount = Object.keys(config.tracks).length;
+    let mutedCount = 0, soloCount = 0, gainAdjusted = 0;
+    for (const t of Object.values(config.tracks)) {
+      if (t.muted) mutedCount++;
+      if (t.solo) soloCount++;
+      if (t.gain !== undefined && t.gain !== 1) gainAdjusted++;
+    }
+    const parts = [`${trackCount} tracks`];
+    if (gainAdjusted > 0) parts.push(`${gainAdjusted} gain adjusted`);
+    if (mutedCount > 0) parts.push(`${mutedCount} muted`);
+    if (soloCount > 0) parts.push(`${soloCount} solo`);
+    lines.push(`<li>Track positions: ${parts.join(', ')}</li>`);
+  }
+
+  // Master gain
+  if (config.masterGainDb !== undefined) {
+    const autoStr = config.masterGainAuto ? ' (auto)' : '';
+    lines.push(`<li>Master gain: ${config.masterGainDb >= 0 ? '+' : ''}${config.masterGainDb.toFixed(1)} dB${autoStr}</li>`);
+  }
+
+  // Reverb
+  if (config.reverbPreset && config.reverbPreset !== 'none') {
+    const presetName = config.reverbPreset.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const modeStr = config.reverbMode ? ` (${config.reverbMode})` : '';
+    const wetStr = config.reverbWetDb !== undefined ? `, ${config.reverbWetDb >= 0 ? '+' : ''}${config.reverbWetDb.toFixed(1)} dB wet` : '';
+    lines.push(`<li>Reverb: ${presetName}${modeStr}${wetStr}</li>`);
+  }
+
+  // Mic technique
+  if (config.micConfig) {
+    const technique = STEREO_TECHNIQUES[config.micConfig.technique];
+    const techniqueName = technique?.name || config.micConfig.technique;
+    const pattern = POLAR_PATTERNS[config.micConfig.pattern];
+    const patternName = pattern?.shortName || config.micConfig.pattern;
+    const spacingStr = config.micConfig.spacing ? `, ${config.micConfig.spacing.toFixed(2)}m` : '';
+    const angleStr = config.micConfig.angle ? `, ${config.micConfig.angle}°` : '';
+    lines.push(`<li>Mic technique: ${techniqueName} (${patternName}${spacingStr}${angleStr})</li>`);
+  }
+
+  // Ground reflection
+  if (config.groundReflectionModel && config.groundReflectionModel !== 'none') {
+    const modelName = config.groundReflectionModel.replace(/\b\w/g, c => c.toUpperCase());
+    lines.push(`<li>Ground reflection: ${modelName}</li>`);
+  }
+
+  // Noise gate
+  if (config.noiseGateEnabled) {
+    const thresholdStr = config.noiseGateThreshold !== undefined ? ` (${config.noiseGateThreshold} dB)` : '';
+    lines.push(`<li>Noise gate: enabled${thresholdStr}</li>`);
+  }
+
+  lines.push('</ul>');
+  return lines.join('\n');
+}
+
+/**
+ * Show share confirmation modal
+ */
+function showShareModal() {
+  elements.shareModal.classList.remove('hidden');
+}
+
+/**
+ * Hide share confirmation modal
+ */
+function hideShareModal() {
+  elements.shareModal.classList.add('hidden');
+}
+
+/**
+ * Confirm loading shared config
+ */
+async function confirmSharedConfig() {
+  hideShareModal();
+
+  if (!pendingSharedConfig) return;
+
+  const config = pendingSharedConfig;
+  const profile = PROFILES[config.profile];
+
+  if (!profile) {
+    showToast('Profile not found', 'error');
+    pendingSharedConfig = null;
+    return;
+  }
+
+  // Update radio button for visual consistency
+  const profileRadio = document.querySelector(`input[name="profile"][value="${config.profile}"]`);
+  if (profileRadio) profileRadio.checked = true;
+
+  // Load the profile directly from config
+  await loadProfile(config.profile, profile.url, profile.fullName);
+
+  // Apply settings (pendingSharedConfig is applied in loadProfile's success path
+  // or manually if CORS fails and user uploads manually)
+  if (state.tracks.size > 0) {
+    applySharedConfig(config);
+    pendingSharedConfig = null;
+    showToast('Loaded shared arrangement', 'success');
+  }
+  // If CORS failed, pendingSharedConfig remains set for manual upload fallback
+
+  // Clear hash to avoid re-loading on refresh
+  history.replaceState(null, '', location.pathname);
+}
+
+/**
+ * Cancel loading shared config
+ */
+function cancelSharedConfig() {
+  hideShareModal();
+  pendingSharedConfig = null;
+  // Clear hash
+  history.replaceState(null, '', location.pathname);
 }
 
 /**

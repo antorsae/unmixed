@@ -1156,6 +1156,24 @@ button.primary:hover {
   margin-top: 8px;
 }
 
+/* Config summary in share modal */
+.config-summary {
+  margin: 0;
+  padding: 0 0 0 20px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.config-summary li {
+  margin-bottom: 4px;
+}
+
+#share-modal-details {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
 #render-progress-text {
   font-size: 16px;
   color: var(--ink);
