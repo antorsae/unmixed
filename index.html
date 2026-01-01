@@ -72,6 +72,146 @@
 
       <!-- Stage canvas -->
       <section id="stage-section">
+        <div id="hall-controls">
+          <div class="hall-control-block hall-controls-top-left">
+            <div class="transport-buttons compact">
+              <button id="rewind-btn" class="btn transport-btn" title="Rewind (R)">
+                <span class="icon">&#x23EE;</span>
+              </button>
+              <button id="play-btn" class="btn transport-btn primary" title="Play/Pause (Space)">
+                <span class="icon play-icon">&#x25B6;</span>
+                <span class="icon pause-icon hidden">&#x23F8;</span>
+              </button>
+              <button id="stop-btn" class="btn transport-btn" title="Stop">
+                <span class="icon">&#x23F9;</span>
+              </button>
+            </div>
+
+            <div class="seek-container hall-seek">
+              <input type="range" id="seek-bar" min="0" max="100" value="0" step="0.1">
+              <span id="time-display">00:00 / 00:00</span>
+            </div>
+
+            <div class="master-gain-container">
+              <label for="master-gain">Master</label>
+              <input type="range" id="master-gain" min="-36" max="30" value="0" step="0.5">
+              <span id="master-gain-value">+00.0 dB</span>
+              <label class="master-auto-toggle">
+                <input type="checkbox" id="master-auto" checked>
+                Auto (-18 dBFS)
+              </label>
+              <div class="master-meter">
+                <div class="master-meter-fill" id="master-meter-fill"></div>
+              </div>
+              <span id="master-meter-text" class="master-meter-text">Output: --.- dBFS | Target -18.0 dBFS | Delta --.- dB</span>
+              <span id="master-auto-status" class="master-auto-status"></span>
+            </div>
+
+            <div class="noise-gate-controls">
+              <label class="checkbox-label">
+                <input type="checkbox" id="noise-gate-checkbox">
+                Noise Gate
+              </label>
+              <div class="noise-gate-threshold" id="noise-gate-threshold-container">
+                <label for="noise-gate-threshold">Threshold:</label>
+                <input type="range" id="noise-gate-threshold" min="-75" max="-55" value="-70" step="1">
+                <span id="noise-gate-threshold-value">-70dB</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hall-control-block hall-controls-top-right">
+            <div class="reverb-controls">
+              <label for="reverb-preset">Reverb:</label>
+              <select id="reverb-preset">
+                <option value="none" selected>None</option>
+                <option value="small-room">Small Room</option>
+                <option value="chamber">Chamber</option>
+                <option value="concert-hall">Concert Hall</option>
+                <option value="cathedral">Cathedral</option>
+                <option value="outdoor-amphitheater">Outdoor Amphitheater</option>
+              </select>
+              <div class="reverb-wet-control">
+                <label for="reverb-wet">Wet:</label>
+                <input type="range" id="reverb-wet" min="-24" max="6" value="0" step="0.5">
+                <span id="reverb-wet-value">0.0 dB</span>
+              </div>
+              <div class="reverb-mode">
+                <label>
+                  <input type="radio" name="reverb-mode" value="depth" checked>
+                  Depth-based
+                </label>
+                <label>
+                  <input type="radio" name="reverb-mode" value="uniform">
+                  Uniform
+                </label>
+              </div>
+            </div>
+
+            <div class="ground-reflection-controls">
+              <label for="ground-reflection-model">Ground reflection:</label>
+              <select id="ground-reflection-model">
+                <option value="none" selected>None</option>
+                <option value="stage">Stage (wood)</option>
+                <option value="hard">Hard (rigid)</option>
+                <option value="soft">Soft (absorptive)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="hall-control-block hall-controls-bottom-left">
+            <div class="mic-controls mic-controls-primary">
+              <div class="mic-technique-control">
+                <label for="mic-technique">Technique:</label>
+                <select id="mic-technique">
+                  <option value="spaced-pair" selected>Spaced Pair (AB)</option>
+                  <option value="xy-coincident">XY Coincident</option>
+                  <option value="ortf">ORTF</option>
+                  <option value="blumlein">Blumlein</option>
+                  <option value="decca-tree">Decca Tree</option>
+                </select>
+              </div>
+              <div class="mic-pattern-control">
+                <label for="mic-pattern">Pattern:</label>
+                <select id="mic-pattern">
+                  <option value="omni" selected>Omni</option>
+                  <option value="cardioid">Cardioid</option>
+                  <option value="supercardioid">Supercardioid</option>
+                  <option value="hypercardioid">Hypercardioid</option>
+                  <option value="figure8">Figure-8</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="hall-control-block hall-controls-bottom-right">
+            <div class="mic-controls mic-controls-secondary">
+              <div class="mic-spacing-control">
+                <label for="mic-spacing">Spacing:</label>
+                <input type="range" id="mic-spacing" min="0.5" max="6" value="2" step="0.1">
+                <span id="mic-spacing-value">2.00m</span>
+              </div>
+              <div class="mic-angle-control hidden">
+                <label for="mic-angle">Angle:</label>
+                <input type="range" id="mic-angle" min="60" max="135" value="90" step="5">
+                <span id="mic-angle-value">90°</span>
+              </div>
+              <div class="mic-center-controls hidden">
+                <div class="mic-center-depth-control">
+                  <label for="mic-center-depth">Center Depth:</label>
+                  <input type="range" id="mic-center-depth" min="0.5" max="3" value="1.5" step="0.1">
+                  <span id="mic-center-depth-value">1.5m</span>
+                </div>
+                <div class="mic-center-level-control">
+                  <label for="mic-center-level">Center Level:</label>
+                  <input type="range" id="mic-center-level" min="-12" max="6" value="0" step="0.5">
+                  <span id="mic-center-level-value">0dB</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <canvas id="stage-canvas"></canvas>
         <div id="stage-labels">
           <span class="label-left">L</span>
@@ -82,159 +222,6 @@
       </section>
     </main>
 
-    <!-- Transport controls -->
-    <footer id="transport">
-      <div class="transport-row">
-        <div class="transport-buttons">
-          <button id="rewind-btn" class="btn transport-btn" title="Rewind (R)">
-            <span class="icon">&#x23EE;</span>
-          </button>
-          <button id="play-btn" class="btn transport-btn primary" title="Play/Pause (Space)">
-            <span class="icon play-icon">&#x25B6;</span>
-            <span class="icon pause-icon hidden">&#x23F8;</span>
-          </button>
-          <button id="stop-btn" class="btn transport-btn" title="Stop">
-            <span class="icon">&#x23F9;</span>
-          </button>
-        </div>
-
-        <div class="seek-container">
-          <input type="range" id="seek-bar" min="0" max="100" value="0" step="0.1">
-          <span id="time-display">00:00 / 00:00</span>
-        </div>
-
-        <div class="master-gain-container">
-          <label for="master-gain">Master</label>
-          <input type="range" id="master-gain" min="-36" max="30" value="0" step="0.5">
-          <span id="master-gain-value">0.0 dB</span>
-          <label class="master-auto-toggle">
-            <input type="checkbox" id="master-auto" checked>
-            Auto
-          </label>
-          <div class="master-meter">
-            <div class="master-meter-fill" id="master-meter-fill"></div>
-          </div>
-          <span id="master-meter-text" class="master-meter-text">Output: -- dBFS | Target --</span>
-          <span id="master-auto-status" class="master-auto-status"></span>
-        </div>
-      </div>
-
-      <div class="transport-row">
-        <div class="reverb-controls">
-          <label for="reverb-preset">Reverb:</label>
-          <select id="reverb-preset">
-            <option value="none" selected>None</option>
-            <option value="small-room">Small Room</option>
-            <option value="chamber">Chamber</option>
-            <option value="concert-hall">Concert Hall</option>
-            <option value="cathedral">Cathedral</option>
-            <option value="outdoor-amphitheater">Outdoor Amphitheater</option>
-          </select>
-          <div class="reverb-wet-control">
-            <label for="reverb-wet">Wet:</label>
-            <input type="range" id="reverb-wet" min="-24" max="6" value="0" step="0.5">
-            <span id="reverb-wet-value">0.0 dB</span>
-          </div>
-          <div class="reverb-mode">
-            <label>
-              <input type="radio" name="reverb-mode" value="depth" checked>
-              Depth-based
-            </label>
-            <label>
-              <input type="radio" name="reverb-mode" value="uniform">
-              Uniform
-            </label>
-          </div>
-        </div>
-
-        <div class="mic-controls">
-          <div class="mic-technique-control">
-            <label for="mic-technique">Technique:</label>
-            <select id="mic-technique">
-              <option value="spaced-pair" selected>Spaced Pair (AB)</option>
-              <option value="xy-coincident">XY Coincident</option>
-              <option value="ortf">ORTF</option>
-              <option value="blumlein">Blumlein</option>
-              <option value="decca-tree">Decca Tree</option>
-            </select>
-          </div>
-          <div class="mic-pattern-control">
-            <label for="mic-pattern">Pattern:</label>
-            <select id="mic-pattern">
-              <option value="omni" selected>Omni</option>
-              <option value="cardioid">Cardioid</option>
-              <option value="supercardioid">Supercardioid</option>
-              <option value="hypercardioid">Hypercardioid</option>
-              <option value="figure8">Figure-8</option>
-            </select>
-          </div>
-          <div class="mic-spacing-control">
-            <label for="mic-spacing">Spacing:</label>
-            <input type="range" id="mic-spacing" min="0.5" max="6" value="2" step="0.1">
-            <span id="mic-spacing-value">2.00m</span>
-          </div>
-          <div class="mic-angle-control hidden">
-            <label for="mic-angle">Angle:</label>
-            <input type="range" id="mic-angle" min="60" max="135" value="90" step="5">
-            <span id="mic-angle-value">90°</span>
-          </div>
-          <div class="mic-center-controls hidden">
-            <div class="mic-center-depth-control">
-              <label for="mic-center-depth">Center Depth:</label>
-              <input type="range" id="mic-center-depth" min="0.5" max="3" value="1.5" step="0.1">
-              <span id="mic-center-depth-value">1.5m</span>
-            </div>
-            <div class="mic-center-level-control">
-              <label for="mic-center-level">Center Level:</label>
-              <input type="range" id="mic-center-level" min="-12" max="6" value="0" step="0.5">
-              <span id="mic-center-level-value">0dB</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="physics-controls">
-          <label class="checkbox-label">
-            <input type="checkbox" id="ground-reflection-checkbox">
-            Ground Reflection
-          </label>
-          <div class="ground-reflection-model">
-            <label for="ground-reflection-model">Surface:</label>
-            <select id="ground-reflection-model">
-              <option value="stage" selected>Stage (wood)</option>
-              <option value="hard">Hard (rigid)</option>
-              <option value="soft">Soft (absorptive)</option>
-            </select>
-          </div>
-          <label class="checkbox-label">
-            <input type="checkbox" id="show-polar-patterns" checked>
-            Show Polar Patterns
-          </label>
-        </div>
-
-        <div class="noise-gate-controls">
-          <label class="checkbox-label">
-            <input type="checkbox" id="noise-gate-checkbox">
-            Noise Gate
-          </label>
-          <div class="noise-gate-threshold" id="noise-gate-threshold-container">
-            <label for="noise-gate-threshold">Threshold:</label>
-            <input type="range" id="noise-gate-threshold" min="-75" max="-55" value="-70" step="1">
-            <span id="noise-gate-threshold-value">-70dB</span>
-          </div>
-        </div>
-
-        <div class="action-buttons">
-          <button id="reset-positions-btn" class="btn secondary">Reset Positions</button>
-          <button id="reset-all-btn" class="btn secondary">Reset All</button>
-        </div>
-
-        <div class="export-buttons">
-          <button id="download-wav-btn" class="btn primary" disabled>Download WAV</button>
-          <button id="download-mp3-btn" class="btn primary" disabled>Download MP3</button>
-        </div>
-      </div>
-    </footer>
-
     <!-- Track list (collapsible) -->
     <section id="track-list-section" class="collapsed">
       <h2 id="track-list-header">
@@ -242,6 +229,16 @@
         Tracks
         <span id="track-count"></span>
       </h2>
+      <div class="track-list-actions">
+        <div class="action-buttons">
+          <button id="reset-positions-btn" class="btn secondary">Reset Positions</button>
+          <button id="reset-all-btn" class="btn secondary">Reset All</button>
+        </div>
+        <div class="export-buttons">
+          <button id="download-wav-btn" class="btn primary" disabled>Download WAV</button>
+          <button id="download-mp3-btn" class="btn primary" disabled>Download MP3</button>
+        </div>
+      </div>
       <div id="track-list"></div>
     </section>
 

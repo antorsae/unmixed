@@ -129,8 +129,9 @@ async function init() {
   updateTransportUI();
   updateMicControlsUI();
   if (elements.groundReflectionModel) {
-    elements.groundReflectionModel.value = state.groundReflectionModel;
-    elements.groundReflectionModel.disabled = !state.groundReflectionEnabled;
+    elements.groundReflectionModel.value = state.groundReflectionEnabled
+      ? state.groundReflectionModel
+      : 'none';
   }
 }
 
@@ -168,7 +169,6 @@ function cacheElements() {
   elements.reverbWet = document.getElementById('reverb-wet');
   elements.reverbWetValue = document.getElementById('reverb-wet-value');
   elements.reverbWetControl = document.querySelector('.reverb-wet-control');
-  elements.groundReflectionCheckbox = document.getElementById('ground-reflection-checkbox');
   elements.groundReflectionModel = document.getElementById('ground-reflection-model');
   // Microphone controls
   elements.micTechnique = document.getElementById('mic-technique');
@@ -184,7 +184,6 @@ function cacheElements() {
   elements.micCenterDepthValue = document.getElementById('mic-center-depth-value');
   elements.micCenterLevel = document.getElementById('mic-center-level');
   elements.micCenterLevelValue = document.getElementById('mic-center-level-value');
-  elements.showPolarPatterns = document.getElementById('show-polar-patterns');
   // Legacy (for compatibility)
   elements.micSeparation = elements.micSpacing;
   elements.micSeparationValue = elements.micSpacingValue;
@@ -245,7 +244,6 @@ function setupEventListeners() {
   });
 
   // Physics controls
-  elements.groundReflectionCheckbox.addEventListener('change', handleGroundReflectionChange);
   elements.groundReflectionModel?.addEventListener('change', handleGroundReflectionModelChange);
 
   // Microphone controls
@@ -255,7 +253,6 @@ function setupEventListeners() {
   elements.micAngle?.addEventListener('input', handleMicAngleChange);
   elements.micCenterDepth?.addEventListener('input', handleMicCenterDepthChange);
   elements.micCenterLevel?.addEventListener('input', handleMicCenterLevelChange);
-  elements.showPolarPatterns?.addEventListener('change', handleShowPolarPatternsChange);
 
   // Noise gate controls
   elements.noiseGateCheckbox.addEventListener('change', handleNoiseGateToggle);
@@ -407,7 +404,7 @@ function setupStageCallbacks() {
 
   // Initialize canvas with mic config from state
   stageCanvas.setMicConfig(state.micConfig);
-  stageCanvas.setShowPolarPatterns(state.showPolarPatterns);
+  stageCanvas.setShowPolarPatterns(true);
 }
 
 /**
@@ -1310,6 +1307,14 @@ function formatDb(db) {
   return `${sign}${rounded.toFixed(1)} dB`;
 }
 
+function formatDbFixed(db, { suffix = ' dB', empty = '--.- dB' } = {}) {
+  if (!Number.isFinite(db)) return empty;
+  const sign = db >= 0 ? '+' : '-';
+  const absValue = Math.abs(db);
+  const digits = absValue.toFixed(1).padStart(4, '0');
+  return `${sign}${digits}${suffix}`;
+}
+
 function clampMasterGainDb(db) {
   if (!Number.isFinite(db)) return 0;
   return Math.max(MASTER_GAIN_DB_MIN, Math.min(MASTER_GAIN_DB_MAX, db));
@@ -1326,7 +1331,7 @@ function setMasterGainDb(db, { skipSave = false } = {}) {
     elements.masterGain.disabled = state.masterGainAuto;
   }
   if (elements.masterGainValue) {
-    elements.masterGainValue.textContent = formatDb(clampedDb);
+    elements.masterGainValue.textContent = formatDbFixed(clampedDb);
   }
   if (!skipSave) {
     markUnsaved();
@@ -1419,7 +1424,7 @@ async function updateAutoMasterGain() {
 
     gainDb = clampMasterGainDb(gainDb);
     setMasterGainDb(gainDb, { skipSave: true });
-    setMasterAutoStatus(`Auto: ${formatDb(gainDb)}`);
+    setMasterAutoStatus(`Auto: ${formatDbFixed(gainDb)}`);
     if (autoGainController === controller) {
       autoGainController = null;
     }
@@ -1439,8 +1444,8 @@ function updateMasterMeterDisplay() {
 
   const currentDb = audioEngine.getMasterLevelDb();
   if (!Number.isFinite(currentDb) || currentDb === -Infinity) {
-    const targetLabel = formatDb(MASTER_TARGET_RMS_DB).replace(' dB', ' dBFS');
-    elements.masterMeterText.textContent = `Output: -- dBFS | Target ${targetLabel}`;
+    const targetLabel = formatDbFixed(MASTER_TARGET_RMS_DB, { suffix: ' dBFS' });
+    elements.masterMeterText.textContent = `Output: --.- dBFS | Target ${targetLabel} | Delta --.- dB`;
     elements.masterMeterText.classList.remove('meter-ok', 'meter-low', 'meter-hot');
     elements.masterMeterFill.style.width = '0%';
     masterMeterSmoothedDb = null;
@@ -1455,9 +1460,9 @@ function updateMasterMeterDisplay() {
   }
 
   const delta = masterMeterSmoothedDb - MASTER_TARGET_RMS_DB;
-  const outputLabel = formatDb(masterMeterSmoothedDb).replace(' dB', ' dBFS');
-  const targetLabel = formatDb(MASTER_TARGET_RMS_DB).replace(' dB', ' dBFS');
-  const deltaLabel = formatDb(delta);
+  const outputLabel = formatDbFixed(masterMeterSmoothedDb, { suffix: ' dBFS' });
+  const targetLabel = formatDbFixed(MASTER_TARGET_RMS_DB, { suffix: ' dBFS' });
+  const deltaLabel = formatDbFixed(delta);
 
   elements.masterMeterText.textContent = `Output: ${outputLabel} | Target ${targetLabel} | Delta ${deltaLabel}`;
   elements.masterMeterText.classList.remove('meter-ok', 'meter-low', 'meter-hot');
@@ -1514,30 +1519,19 @@ function handleReverbWetChange(e) {
 }
 
 /**
- * Handle ground reflection toggle
- */
-function handleGroundReflectionChange(e) {
-  const enabled = e.target.checked;
-  state.groundReflectionEnabled = enabled;
-  audioEngine.setGroundReflection(enabled);
-  if (elements.groundReflectionModel) {
-    elements.groundReflectionModel.disabled = true;
-    clearTimeout(elements.groundReflectionModel._reEnableTimer);
-    elements.groundReflectionModel._reEnableTimer = setTimeout(() => {
-      elements.groundReflectionModel.disabled = !state.groundReflectionEnabled;
-    }, 300);
-  }
-  markUnsaved();
-  maybeScheduleAutoMasterGainUpdate();
-}
-
-/**
  * Handle ground reflection model change
  */
 function handleGroundReflectionModelChange(e) {
   const modelId = e.target.value;
-  state.groundReflectionModel = modelId;
-  audioEngine.setGroundReflectionModel(modelId);
+  if (modelId === 'none') {
+    state.groundReflectionEnabled = false;
+    audioEngine.setGroundReflection(false);
+  } else {
+    state.groundReflectionEnabled = true;
+    state.groundReflectionModel = modelId;
+    audioEngine.setGroundReflectionModel(modelId);
+    audioEngine.setGroundReflection(true);
+  }
   markUnsaved();
   maybeScheduleAutoMasterGainUpdate();
 }
@@ -1622,15 +1616,6 @@ function handleMicCenterLevelChange(e) {
   audioEngine.setCenterLevel(level);
   markUnsaved();
   maybeScheduleAutoMasterGainUpdate();
-}
-
-/**
- * Handle polar pattern visibility toggle
- */
-function handleShowPolarPatternsChange(e) {
-  const show = e.target.checked;
-  state.showPolarPatterns = show;
-  stageCanvas.setShowPolarPatterns(show);
 }
 
 /**
@@ -2336,7 +2321,7 @@ function updateTransportUI() {
   updateTimeDisplay(0, audioEngine.duration);
   elements.masterGain.value = state.masterGainDb;
   elements.masterGain.disabled = state.masterGainAuto;
-  elements.masterGainValue.textContent = formatDb(state.masterGainDb);
+  elements.masterGainValue.textContent = formatDbFixed(state.masterGainDb);
   if (elements.masterAuto) {
     elements.masterAuto.checked = state.masterGainAuto;
   }
@@ -2347,6 +2332,11 @@ function updateTransportUI() {
   elements.reverbWetValue.textContent = formatDb(state.reverbWetDb);
   document.querySelector(`input[name="reverb-mode"][value="${state.reverbMode}"]`).checked = true;
   updateReverbWetVisibility();
+  if (elements.groundReflectionModel) {
+    elements.groundReflectionModel.value = state.groundReflectionEnabled
+      ? state.groundReflectionModel
+      : 'none';
+  }
 }
 
 /**
@@ -2503,7 +2493,7 @@ async function restoreSession() {
   state.groundReflectionModel = session.groundReflectionModel ?? state.groundReflectionModel;
   state.noiseGateEnabled = session.noiseGateEnabled ?? false;
   state.noiseGateThreshold = session.noiseGateThreshold ?? -70;
-  state.showPolarPatterns = session.showPolarPatterns ?? true;
+  state.showPolarPatterns = true;
   // Restore mic config if available, otherwise use default
   if (session.micConfig) {
     state.micConfig = session.micConfig;
@@ -2520,12 +2510,11 @@ async function restoreSession() {
   // Update microphone controls UI
   updateMicControlsUI();
   stageCanvas.setMicConfig(state.micConfig);
-  stageCanvas.setShowPolarPatterns(state.showPolarPatterns);
-  elements.showPolarPatterns.checked = state.showPolarPatterns;
-  elements.groundReflectionCheckbox.checked = state.groundReflectionEnabled;
+  stageCanvas.setShowPolarPatterns(true);
   if (elements.groundReflectionModel) {
-    elements.groundReflectionModel.value = state.groundReflectionModel;
-    elements.groundReflectionModel.disabled = !state.groundReflectionEnabled;
+    elements.groundReflectionModel.value = state.groundReflectionEnabled
+      ? state.groundReflectionModel
+      : 'none';
   }
   elements.noiseGateCheckbox.checked = state.noiseGateEnabled;
   elements.noiseGateThreshold.value = state.noiseGateThreshold;
@@ -2577,7 +2566,6 @@ function saveCurrentSession() {
     reverbMode: state.reverbMode,
     micSeparation: state.micSeparation,
     micConfig: state.micConfig,
-    showPolarPatterns: state.showPolarPatterns,
     groundReflectionEnabled: state.groundReflectionEnabled,
     groundReflectionModel: state.groundReflectionModel,
     noiseGateEnabled: state.noiseGateEnabled,

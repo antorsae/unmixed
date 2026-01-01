@@ -144,7 +144,6 @@ export function createSessionState(appState) {
     // Additional settings
     micSeparation: appState.micSeparation,
     micConfig: appState.micConfig,
-    showPolarPatterns: appState.showPolarPatterns,
     groundReflectionEnabled: appState.groundReflectionEnabled,
     groundReflectionModel: appState.groundReflectionModel,
     noiseGateEnabled: appState.noiseGateEnabled,
