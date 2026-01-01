@@ -2514,15 +2514,18 @@ function loadFromURL() {
     const json = pako.inflate(compressed, { to: 'string' });
     const config = JSON.parse(json);
 
-    // Validate profile exists
-    if (!config.profile || !PROFILES[config.profile]) {
+    // Validate config has profile
+    if (!config.profile) {
       showToast('Invalid shared configuration', 'error');
       return false;
     }
 
+    // Check if it's a built-in profile or custom
+    const isBuiltInProfile = !!PROFILES[config.profile];
+
     // Store pending config and show confirmation modal
     pendingSharedConfig = config;
-    const summary = buildConfigSummary(config);
+    const summary = buildConfigSummary(config, isBuiltInProfile);
     elements.shareModalDetails.innerHTML = summary;
     showShareModal();
     return true;
@@ -2536,12 +2539,19 @@ function loadFromURL() {
 /**
  * Build human-readable summary of shared config
  */
-function buildConfigSummary(config) {
+function buildConfigSummary(config, isBuiltInProfile = true) {
   const profile = PROFILES[config.profile];
   const lines = [];
 
   // Recording name
-  lines.push(`<p><strong>Recording:</strong> ${profile?.fullName || config.profile}</p>`);
+  if (isBuiltInProfile) {
+    lines.push(`<p><strong>Recording:</strong> ${profile?.fullName || config.profile}</p>`);
+  } else {
+    // Custom profile - user needs to upload the recording
+    const displayName = config.profileName || 'Custom recording';
+    lines.push(`<p><strong>Recording:</strong> ${displayName}</p>`);
+    lines.push('<p class="hint" style="margin-top: 8px; font-size: 12px; color: var(--ink-soft);">⚠️ Upload the same recording first, then these settings will be applied.</p>');
+  }
   lines.push('<ul class="config-summary">');
 
   // Track settings
@@ -2626,9 +2636,11 @@ async function confirmSharedConfig() {
   const config = pendingSharedConfig;
   const profile = PROFILES[config.profile];
 
+  // Handle custom profiles - keep pending config and wait for user to upload
   if (!profile) {
-    showToast('Profile not found', 'error');
-    pendingSharedConfig = null;
+    showToast('Upload the recording to apply these settings', 'info');
+    // pendingSharedConfig stays set - will be applied when user uploads
+    history.replaceState(null, '', location.pathname);
     return;
   }
 
