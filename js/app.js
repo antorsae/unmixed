@@ -162,6 +162,7 @@ function cacheElements() {
   elements.masterGain = document.getElementById('master-gain');
   elements.masterGainValue = document.getElementById('master-gain-value');
   elements.masterAuto = document.getElementById('master-auto');
+  elements.masterAutoTarget = document.getElementById('master-auto-target');
   elements.masterMeterText = document.getElementById('master-meter-text');
   elements.masterMeterFill = document.getElementById('master-meter-fill');
   elements.masterAutoStatus = document.getElementById('master-auto-status');
@@ -1344,6 +1345,11 @@ function setMasterAutoStatus(text) {
   elements.masterAutoStatus.classList.toggle('hidden', !text);
 }
 
+function updateMasterAutoTargetLabel() {
+  if (!elements.masterAutoTarget) return;
+  elements.masterAutoTarget.textContent = formatDbFixed(MASTER_TARGET_RMS_DB, { suffix: ' dBFS' });
+}
+
 function handleMasterAutoToggle(e) {
   const enabled = e.target.checked;
   state.masterGainAuto = enabled;
@@ -2322,6 +2328,7 @@ function updateTransportUI() {
   elements.masterGain.value = state.masterGainDb;
   elements.masterGain.disabled = state.masterGainAuto;
   elements.masterGainValue.textContent = formatDbFixed(state.masterGainDb);
+  updateMasterAutoTargetLabel();
   if (elements.masterAuto) {
     elements.masterAuto.checked = state.masterGainAuto;
   }

@@ -987,6 +987,7 @@ button.primary:hover {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .mic-center-controls.hidden,
@@ -1256,6 +1257,11 @@ button.primary:hover {
   .hall-controls-top-right,
   .hall-controls-bottom-right {
     justify-self: start;
+  }
+
+  .hall-controls-bottom-right .mic-controls-secondary {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 
