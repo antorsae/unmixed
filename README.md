@@ -207,6 +207,23 @@ Your work is automatically saved:
 - Ground reflection model selection
 - Restored on page reload with confirmation prompt
 
+### Sharing Arrangements
+
+Share your mix configurations with others via URL:
+
+- **Share Button**: Click "Share your arrangement" to copy a shareable URL to clipboard
+- **Self-Contained URLs**: All settings are compressed and encoded in the URL hash fragment
+- **Confirmation Dialog**: When opening a shared URL, see a summary of what will be loaded before confirming
+- **CORS Fallback**: If automatic download fails, upload the recording manually and shared settings will still apply
+
+Shared settings include:
+- All track positions, gains, mute/solo states
+- Master gain and auto loudness
+- Reverb preset, mode, and wet level
+- Microphone technique, pattern, spacing, and angle
+- Ground reflection model
+- Noise gate settings
+
 ## Anechoic Recordings
 
 The mixer includes profiles for symphonic recordings from [Aalto University's Department of Media Technology](https://research.cs.aalto.fi/acoustics/virtual-acoustics/research/acoustic-measurement-and-analysis/85-anechoic-recordings.html):
