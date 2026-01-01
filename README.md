@@ -76,9 +76,9 @@ This project is **not** trying to:
 
 The mixer implements several acoustic phenomena to create realistic spatial audio:
 
-- **Interaural Time Difference (ITD)**: Sound arrives at the closer ear before the farther ear, creating natural localization cues. The delay is calculated based on the head model and sound source position.
+- **Interaural Time Difference (ITD)**: Localization cues come from left/right propagation delay differences. Delays are computed from source-to-microphone distances (mic geometry + source position), with no explicit head/ear model.
 
-- **Distance-Based Amplitude Decay**: Sound intensity follows the inverse-square law (1/r), where instruments farther from the microphones are naturally quieter.
+- **Distance-Based Amplitude Decay**: Uses a 1/d amplitude law normalized to a 3m reference distance, with a 0.5m minimum distance clamp to avoid singularities.
 
 - **Air Absorption**: High frequencies are attenuated more over distance, simulating the natural filtering effect of air. This creates more realistic depth perception for distant instruments.
 
@@ -95,10 +95,10 @@ Five industry-standard stereo recording techniques, each with accurate polar pat
 
 | Technique | Description | Key Parameters |
 |-----------|-------------|----------------|
-| **Spaced Pair (AB)** | Two parallel mics spaced apart | Spacing: 0.5-6m |
+| **Spaced Pair (AB)** | Two parallel mics spaced apart | Spacing: 0.3-6m |
 | **XY Coincident** | Two angled mics at same point | Angle: 60-135° |
-| **ORTF** | French broadcast standard | 17cm spacing, 110° angle |
-| **Blumlein** | Two figure-8 mics at 90° | Fixed pattern & angle |
+| **ORTF** | French broadcast standard | Spacing: 0.1-0.4m, Angle: 90-130° |
+| **Blumlein** | Two figure-8 mics at 90° | Angle: 60-120° (pattern fixed) |
 | **Decca Tree** | Three-mic orchestral standard | L/R spacing, center depth & level |
 
 ### Polar Pattern Modeling
@@ -115,9 +115,9 @@ Patterns are visualized on the stage canvas around each microphone, showing the 
 
 ### Instrument Directivity Simulation
 
-When multiple microphone positions are available for an instrument (e.g., front mic, top mic, bell mic), the mixer can simulate directional characteristics:
+When multiple microphone positions are available for an instrument (front mic 6 and bell mic 8), the mixer can simulate directional characteristics:
 
-- Instruments facing the audience project more high-frequency content forward
+- Instruments facing the audience project more sound toward the front mic
 - Rear-facing instruments sound more muffled
 - This is achieved by blending between different mic recordings based on the instrument's orientation
 
@@ -145,7 +145,7 @@ The interactive stage canvas provides intuitive control:
 
 The Aalto anechoic recordings were made with uniform gain settings across all instruments, preserving natural orchestral dynamics but resulting in very quiet levels for softer instruments. The built-in noise gate addresses background noise while preserving these natural dynamics:
 
-- **Automatic Enabling**: Noise gate is automatically enabled when loading Aalto profiles
+- **Manual Enabling**: Noise gate is available but off by default
 - **Adjustable Threshold**: -75dB to -55dB range (default -70dB)
 - **Optimized for Aalto Recordings**: Threshold calibrated via analysis of all four symphonic works
 - **Shared Envelope Processing**: Directivity buffers (front/bell mics) use unified envelope for coherent imaging

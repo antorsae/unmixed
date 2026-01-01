@@ -76,6 +76,15 @@ const MASTER_ANALYSIS_PERCENTILE = 0.95;
 const MASTER_ANALYSIS_MIN_DB = -80;
 const MASTER_AUTO_DEBOUNCE_MS = 800;
 
+// Wikipedia links for microphone techniques
+const TECHNIQUE_WIKI = {
+  'spaced-pair': 'https://en.wikipedia.org/wiki/Microphone_practice#A-B_stereo',
+  'xy-coincident': 'https://en.wikipedia.org/wiki/Microphone_practice#X-Y_technique',
+  'ortf': 'https://en.wikipedia.org/wiki/ORTF_stereo_technique',
+  'blumlein': 'https://en.wikipedia.org/wiki/Blumlein_pair',
+  'decca-tree': 'https://en.wikipedia.org/wiki/Decca_tree',
+};
+
 /**
  * Initialize the application
  */
@@ -167,12 +176,14 @@ function cacheElements() {
   elements.masterMeterFill = document.getElementById('master-meter-fill');
   elements.masterAutoStatus = document.getElementById('master-auto-status');
   elements.reverbPreset = document.getElementById('reverb-preset');
+  elements.reverbMode = document.getElementById('reverb-mode');
   elements.reverbWet = document.getElementById('reverb-wet');
   elements.reverbWetValue = document.getElementById('reverb-wet-value');
   elements.reverbWetControl = document.querySelector('.reverb-wet-control');
   elements.groundReflectionModel = document.getElementById('ground-reflection-model');
   // Microphone controls
   elements.micTechnique = document.getElementById('mic-technique');
+  elements.micTechniqueWiki = document.getElementById('mic-technique-wiki');
   elements.micPattern = document.getElementById('mic-pattern');
   elements.micSpacing = document.getElementById('mic-spacing');
   elements.micSpacingValue = document.getElementById('mic-spacing-value');
@@ -239,10 +250,8 @@ function setupEventListeners() {
 
   // Reverb controls
   elements.reverbPreset.addEventListener('change', handleReverbPresetChange);
+  elements.reverbMode?.addEventListener('change', handleReverbModeChange);
   elements.reverbWet.addEventListener('input', handleReverbWetChange);
-  document.querySelectorAll('input[name="reverb-mode"]').forEach(radio => {
-    radio.addEventListener('change', handleReverbModeChange);
-  });
 
   // Physics controls
   elements.groundReflectionModel?.addEventListener('change', handleGroundReflectionModelChange);
@@ -1305,6 +1314,10 @@ function handleMasterGainChange(e) {
  */
 function handleReverbPresetChange(e) {
   state.reverbPreset = e.target.value;
+  // Enable/disable reverb mode dropdown based on preset
+  if (elements.reverbMode) {
+    elements.reverbMode.disabled = (state.reverbPreset === 'none');
+  }
   updateReverb();
   markUnsaved();
   maybeScheduleAutoMasterGainUpdate();
@@ -1478,7 +1491,7 @@ function updateMasterMeterDisplay() {
   const currentDb = audioEngine.getMasterLevelDb();
   if (!Number.isFinite(currentDb) || currentDb === -Infinity) {
     const targetLabel = formatDbFixed(MASTER_TARGET_RMS_DB, { suffix: ' dBFS' });
-    elements.masterMeterText.textContent = `Output: --.- dBFS | Target ${targetLabel} | Delta --.- dB`;
+    elements.masterMeterText.textContent = `🔊 --.- dBFS | 🎯 ${targetLabel} | Δ --.- dB`;
     elements.masterMeterText.classList.remove('meter-ok', 'meter-low', 'meter-hot');
     elements.masterMeterFill.style.width = '0%';
     masterMeterSmoothedDb = null;
@@ -1497,7 +1510,7 @@ function updateMasterMeterDisplay() {
   const targetLabel = formatDbFixed(MASTER_TARGET_RMS_DB, { suffix: ' dBFS' });
   const deltaLabel = formatDbFixed(delta);
 
-  elements.masterMeterText.textContent = `Output: ${outputLabel} | Target ${targetLabel} | Delta ${deltaLabel}`;
+  elements.masterMeterText.textContent = `🔊 ${outputLabel} | 🎯 ${targetLabel} | Δ ${deltaLabel}`;
   elements.masterMeterText.classList.remove('meter-ok', 'meter-low', 'meter-hot');
   if (Math.abs(delta) <= 1) {
     elements.masterMeterText.classList.add('meter-ok');
@@ -1576,6 +1589,11 @@ function handleMicTechniqueChange(e) {
   const techniqueId = e.target.value;
   state.micConfig = createMicrophoneConfig(techniqueId);
   state.micSeparation = state.micConfig.spacing;
+
+  // Update wiki link for this technique
+  if (elements.micTechniqueWiki && TECHNIQUE_WIKI[techniqueId]) {
+    elements.micTechniqueWiki.href = TECHNIQUE_WIKI[techniqueId];
+  }
 
   // Update UI visibility based on technique
   updateMicControlsUI();
@@ -2362,9 +2380,12 @@ function updateTransportUI() {
   setMasterAutoStatus('');
   updateMasterMeterDisplay();
   elements.reverbPreset.value = state.reverbPreset;
+  if (elements.reverbMode) {
+    elements.reverbMode.value = state.reverbMode;
+    elements.reverbMode.disabled = (state.reverbPreset === 'none');
+  }
   elements.reverbWet.value = state.reverbWetDb;
   elements.reverbWetValue.textContent = formatDb(state.reverbWetDb);
-  document.querySelector(`input[name="reverb-mode"][value="${state.reverbMode}"]`).checked = true;
   updateReverbWetVisibility();
   if (elements.groundReflectionModel) {
     elements.groundReflectionModel.value = state.groundReflectionEnabled

@@ -49,6 +49,8 @@
           <span class="progress-text">Loading...</span>
         </div>
 
+        <div id="status-text"></div>
+
         <div class="divider" id="profile-upload-divider">
           <span>OR</span>
         </div>
@@ -66,8 +68,6 @@
           <input type="file" id="files-input" multiple accept="audio/*" class="hidden">
           <button id="browse-files-btn" class="btn secondary">Browse Files</button>
         </div>
-
-        <div id="status-text"></div>
       </aside>
 
       <!-- Stage canvas -->
@@ -99,11 +99,12 @@
               <label class="master-auto-toggle">
                 <input type="checkbox" id="master-auto" checked>
                 Auto (<span id="master-auto-target">-18.0 dBFS</span>)
+                <a href="https://github.com/antorsae/unmixed#master-loudness--metering" target="_blank" rel="noopener" class="help-link" title="Learn about auto loudness">ⓘ</a>
               </label>
               <div class="master-meter">
                 <div class="master-meter-fill" id="master-meter-fill"></div>
               </div>
-              <span id="master-meter-text" class="master-meter-text">Output: --.- dBFS | Target -18.0 dBFS | Delta --.- dB</span>
+              <span id="master-meter-text" class="master-meter-text">🔊 --.- dBFS | 🎯 -18.0 dBFS | Δ --.- dB</span>
               <span id="master-auto-status" class="master-auto-status"></span>
             </div>
 
@@ -111,9 +112,10 @@
               <label class="checkbox-label">
                 <input type="checkbox" id="noise-gate-checkbox">
                 Noise Gate
+                <a href="https://github.com/antorsae/unmixed#noise-gate" target="_blank" rel="noopener" class="help-link" title="Learn about noise gate">ⓘ</a>
               </label>
               <div class="noise-gate-threshold" id="noise-gate-threshold-container">
-                <label for="noise-gate-threshold">Threshold:</label>
+                <label for="noise-gate-threshold">👂🏽:</label>
                 <input type="range" id="noise-gate-threshold" min="-75" max="-55" value="-70" step="1">
                 <span id="noise-gate-threshold-value">-70dB</span>
               </div>
@@ -122,34 +124,30 @@
 
           <div class="hall-control-block hall-controls-top-right">
             <div class="reverb-controls">
-              <label for="reverb-preset">Reverb:</label>
-              <select id="reverb-preset">
-                <option value="none" selected>None</option>
-                <option value="small-room">Small Room</option>
-                <option value="chamber">Chamber</option>
-                <option value="concert-hall">Concert Hall</option>
-                <option value="cathedral">Cathedral</option>
-                <option value="outdoor-amphitheater">Outdoor Amphitheater</option>
-              </select>
+              <div class="reverb-selects">
+                <label for="reverb-preset">Reverb: <a href="https://github.com/antorsae/unmixed#reverb-system" target="_blank" rel="noopener" class="help-link" title="Learn about reverb">ⓘ</a></label>
+                <select id="reverb-preset">
+                  <option value="none" selected>None</option>
+                  <option value="small-room">Small Room</option>
+                  <option value="chamber">Chamber</option>
+                  <option value="concert-hall">Concert Hall</option>
+                  <option value="cathedral">Cathedral</option>
+                  <option value="outdoor-amphitheater">Outdoor Amphitheater</option>
+                </select>
+                <select id="reverb-mode" disabled>
+                  <option value="depth" selected>📏 Depth</option>
+                  <option value="uniform">🔄 Uniform</option>
+                </select>
+              </div>
               <div class="reverb-wet-control">
-                <label for="reverb-wet">Wet:</label>
+                <label for="reverb-wet">💧</label>
                 <input type="range" id="reverb-wet" min="-24" max="6" value="0" step="0.5">
                 <span id="reverb-wet-value">0.0 dB</span>
-              </div>
-              <div class="reverb-mode">
-                <label>
-                  <input type="radio" name="reverb-mode" value="depth" checked>
-                  Depth-based
-                </label>
-                <label>
-                  <input type="radio" name="reverb-mode" value="uniform">
-                  Uniform
-                </label>
               </div>
             </div>
 
             <div class="ground-reflection-controls">
-              <label for="ground-reflection-model">Ground reflection:</label>
+              <label for="ground-reflection-model">Ground reflections: <a href="https://github.com/antorsae/unmixed#physics-based-audio-simulation" target="_blank" rel="noopener" class="help-link" title="Learn about ground reflection">ⓘ</a></label>
               <select id="ground-reflection-model">
                 <option value="none" selected>None</option>
                 <option value="stage">Stage (wood)</option>
@@ -162,7 +160,7 @@
           <div class="hall-control-block hall-controls-bottom-left">
             <div class="mic-controls mic-controls-primary">
               <div class="mic-technique-control">
-                <label for="mic-technique">Technique:</label>
+                <label for="mic-technique">Technique: <a id="mic-technique-wiki" href="https://en.wikipedia.org/wiki/Microphone_practice#A-B_stereo" target="_blank" rel="noopener" class="help-link" title="Learn about this technique">ⓘ</a></label>
                 <select id="mic-technique">
                   <option value="spaced-pair" selected>Spaced Pair (AB)</option>
                   <option value="xy-coincident">XY Coincident</option>
@@ -172,7 +170,7 @@
                 </select>
               </div>
               <div class="mic-pattern-control">
-                <label for="mic-pattern">Pattern:</label>
+                <label for="mic-pattern">Pattern: <a href="https://github.com/antorsae/unmixed#polar-pattern-modeling" target="_blank" rel="noopener" class="help-link" title="Learn about polar patterns">ⓘ</a></label>
                 <select id="mic-pattern">
                   <option value="omni" selected>Omni</option>
                   <option value="cardioid">Cardioid</option>
@@ -187,7 +185,7 @@
           <div class="hall-control-block hall-controls-bottom-right">
             <div class="mic-controls mic-controls-secondary">
               <div class="mic-spacing-control">
-                <label for="mic-spacing">Spacing:</label>
+                <label for="mic-spacing">↔</label>
                 <input type="range" id="mic-spacing" min="0.5" max="6" value="2" step="0.1">
                 <span id="mic-spacing-value">2.00m</span>
               </div>
@@ -235,8 +233,8 @@
           <button id="reset-all-btn" class="btn secondary">Reset All</button>
         </div>
         <div class="export-buttons">
-          <button id="download-wav-btn" class="btn primary" disabled>Download WAV</button>
-          <button id="download-mp3-btn" class="btn primary" disabled>Download MP3</button>
+          <button id="download-wav-btn" class="btn primary" disabled>💾 WAV</button>
+          <button id="download-mp3-btn" class="btn primary" disabled>💾 MP3</button>
         </div>
       </div>
       <div id="track-list"></div>
@@ -285,6 +283,6 @@
     </footer>
   </div>
 
-  <script type="module" src="js/app.js?v=16"></script>
+  <script type="module" src="js/app.js?v=17"></script>
 </body>
 </html>

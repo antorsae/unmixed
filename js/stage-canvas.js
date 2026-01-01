@@ -1574,9 +1574,9 @@ export class StageCanvas {
       scalePixels = scaleMeters * this.pixelsPerMeter;
     }
 
-    // Position in bottom-left corner
+    // Position in left side, vertically centered
     const x = this.padding + 15;
-    const y = this.height - this.padding - 15;
+    const y = this.height / 2;
 
     ctx.save();
 
