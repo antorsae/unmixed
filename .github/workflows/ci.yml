@@ -35,7 +35,7 @@ jobs:
         run: node tools/ci-visual-levels.js temp/mozart-ci --max-start 0.05 --max-start-avg 0.02 --min-files 10
 
   screenshot:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: audio-sanity
     runs-on: ubuntu-latest
     permissions:
