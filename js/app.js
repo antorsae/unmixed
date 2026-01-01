@@ -2496,6 +2496,25 @@ function getShareableURL() {
 }
 
 /**
+ * Detect if a profile name matches a built-in profile
+ * (e.g., 'mahler_mp3' -> 'mahler', 'Mozart - Don Giovanni' -> 'mozart')
+ */
+function detectBuiltInProfile(profileName) {
+  if (!profileName) return null;
+  const nameLower = profileName.toLowerCase();
+
+  // Check for each built-in profile key
+  for (const key of Object.keys(PROFILES)) {
+    // Match if profileName starts with or contains the profile key
+    // e.g., 'mahler_mp3' starts with 'mahler'
+    if (nameLower.startsWith(key) || nameLower.includes(key)) {
+      return key;
+    }
+  }
+  return null;
+}
+
+/**
  * Load config from URL hash - shows confirmation modal
  */
 function loadFromURL() {
@@ -2521,7 +2540,17 @@ function loadFromURL() {
     }
 
     // Check if it's a built-in profile or custom
-    const isBuiltInProfile = !!PROFILES[config.profile];
+    let isBuiltInProfile = !!PROFILES[config.profile];
+
+    // If custom profile, try to detect built-in profile from profileName
+    // (e.g., 'mahler_mp3' -> 'mahler', 'Mozart - Don Giovanni' -> 'mozart')
+    if (!isBuiltInProfile && config.profileName) {
+      const detectedProfile = detectBuiltInProfile(config.profileName);
+      if (detectedProfile) {
+        config.profile = detectedProfile;
+        isBuiltInProfile = true;
+      }
+    }
 
     // Store pending config and show confirmation modal
     pendingSharedConfig = config;
@@ -2588,11 +2617,12 @@ function buildConfigSummary(config, isBuiltInProfile = true) {
   if (config.micConfig) {
     const technique = STEREO_TECHNIQUES[config.micConfig.technique];
     const techniqueName = technique?.name || config.micConfig.technique;
-    const pattern = POLAR_PATTERNS[config.micConfig.pattern];
-    const patternName = pattern?.shortName || config.micConfig.pattern;
-    const spacingStr = config.micConfig.spacing ? `, ${config.micConfig.spacing.toFixed(2)}m` : '';
-    const angleStr = config.micConfig.angle ? `, ${config.micConfig.angle}°` : '';
-    lines.push(`<li>Mic technique: ${techniqueName} (${patternName}${spacingStr}${angleStr})</li>`);
+    const pattern = config.micConfig.pattern ? POLAR_PATTERNS[config.micConfig.pattern] : null;
+    const patternName = pattern?.shortName || config.micConfig.pattern || '';
+    const spacingStr = config.micConfig.spacing ? `${config.micConfig.spacing.toFixed(2)}m` : '';
+    const angleStr = config.micConfig.angle ? `${config.micConfig.angle}°` : '';
+    const details = [patternName, spacingStr, angleStr].filter(Boolean).join(', ');
+    lines.push(`<li>Mic technique: ${techniqueName}${details ? ` (${details})` : ''}</li>`);
   }
 
   // Ground reflection

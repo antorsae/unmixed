@@ -20,6 +20,8 @@ import {
   getPolarPatternPoints,
 } from './microphone-math.js';
 
+import { STAGE_CONFIG, AIR_ABSORPTION, MIC_CONSTANTS } from './physics-constants.js';
+
 // Physical constants
 const SPEED_OF_SOUND = 343; // m/s at 20°C
 const PATTERN_GAIN_EPS = 1e-4;
@@ -51,30 +53,6 @@ function linearToDb(linear, minDb = DEFAULT_NOISE_FLOOR_DB) {
   if (!Number.isFinite(linear) || linear <= 0) return minDb;
   return Math.max(minDb, 20 * Math.log10(linear));
 }
-
-// Air absorption coefficients in dB per 100 meters at different frequencies
-// Based on ISO 9613-1 at 20°C, 50% relative humidity
-// Used for frequency-dependent high-frequency rolloff simulation
-const AIR_ABSORPTION = [
-  { freq: 250, alpha: 0.1 },
-  { freq: 500, alpha: 0.3 },
-  { freq: 1000, alpha: 0.6 },
-  { freq: 2000, alpha: 1.3 },
-  { freq: 4000, alpha: 2.8 },
-  { freq: 8000, alpha: 7.0 },
-  { freq: 16000, alpha: 22.0 },
-];
-
-// Stage dimensions (meters)
-const STAGE_CONFIG = {
-  width: 20,        // -10m to +10m
-  depth: 15,        // 0 to 15m from audience
-  micSpacing: 2,    // 2m between L and R mics
-  micY: -1,         // Mics are 1m in front of stage edge (in audience)
-  sourceHeight: 1.2, // Average instrument height
-  micHeight: 1.5,   // Mic/ear height
-  groundReflectionCoeff: 0.7, // Ground absorption (0=absorptive, 1=reflective)
-};
 
 const CENTER_PAN_GAIN = Math.SQRT1_2; // -3dB equal-power pan for center mic
 
@@ -589,6 +567,130 @@ export class AudioEngine {
     return { front: frontWeight, bell: bellWeight };
   }
 
+  _getTrackSpatialParams(track, { hasCenter } = {}) {
+    const sourcePosNormalized = { x: track.x, y: track.y };
+    const sourcePosMeters = this.normalizedToMeters(track.x, track.y);
+    const stereoResponse = calculateStereoResponse(sourcePosNormalized, this.micConfig, STAGE_CONFIG);
+
+    const micResponses = stereoResponse.micResponses || {};
+    const resolvedHasCenter = hasCenter ?? STEREO_TECHNIQUES[this.micConfig.technique]?.hasCenter;
+    const responseL = micResponses.L;
+    const responseR = micResponses.R;
+    const responseC = resolvedHasCenter ? micResponses.C : null;
+
+    const ampL = resolvedHasCenter && responseL ? responseL.gain : stereoResponse.left.gain;
+    const ampR = resolvedHasCenter && responseR ? responseR.gain : stereoResponse.right.gain;
+    const ampC = responseC ? responseC.gain : 0;
+
+    const directPatternL = responseL?.patternGain ?? 1;
+    const directPatternR = responseR?.patternGain ?? 1;
+    const directPatternC = responseC?.patternGain ?? 1;
+
+    const distL = responseL?.distance || MIC_CONSTANTS.refDistance;
+    const distR = responseR?.distance || MIC_CONSTANTS.refDistance;
+    const distC = responseC?.distance || MIC_CONSTANTS.refDistance;
+
+    const delayL = responseL?.delay ?? stereoResponse.left.delay;
+    const delayR = responseR?.delay ?? stereoResponse.right.delay;
+    const delayC = responseC?.delay ?? null;
+
+    // Base delay: average propagation time preserves depth timing cues
+    const refDistance = Math.abs(this.micConfig.micY);
+    const refTime = refDistance / SPEED_OF_SOUND;
+    const avgTime = (delayL + delayR) / 2;
+    const baseDelay = Math.max(0, avgTime - refTime);
+
+    // ITD: additional delay for the further channel
+    const minTime = (resolvedHasCenter && delayC !== null)
+      ? Math.min(delayL, delayR, delayC)
+      : Math.min(delayL, delayR);
+    const itdL = delayL - minTime;
+    const itdR = delayR - minTime;
+    const itdC = (resolvedHasCenter && delayC !== null) ? delayC - minTime : 0;
+
+    return {
+      sourcePosNormalized,
+      sourcePosMeters,
+      hasCenter: !!resolvedHasCenter,
+      responseL,
+      responseR,
+      responseC,
+      ampL,
+      ampR,
+      ampC,
+      directPatternL,
+      directPatternR,
+      directPatternC,
+      distL,
+      distR,
+      distC,
+      delayL,
+      delayR,
+      delayC,
+      baseDelay,
+      itdL,
+      itdR,
+      itdC,
+    };
+  }
+
+  _getDirectivityBlends(sourcePosMeters, hasCenter) {
+    const blendL = this.calculateDirectivityBlend(sourcePosMeters, this.micL);
+    const blendR = this.calculateDirectivityBlend(sourcePosMeters, this.micR);
+    const blendC = (hasCenter && this.micC)
+      ? this.calculateDirectivityBlend(sourcePosMeters, this.micC)
+      : { front: 1, bell: 0 };
+
+    return { blendL, blendR, blendC };
+  }
+
+  _getGroundReflectionParams(spatial) {
+    if (!this.groundReflectionEnabled) return null;
+
+    const groundModel = this.getGroundReflectionModelConfig();
+    const lowGain = groundModel.lowGain * STAGE_CONFIG.groundReflectionCoeff;
+    const highGain = groundModel.highGain * STAGE_CONFIG.groundReflectionCoeff;
+    const crossFreq = groundModel.crossoverHz;
+    const refDist = MIC_CONSTANTS.refDistance;
+
+    const buildParams = (micPos, micPattern, micAngle, directPattern, effectiveDist, directDelay, itd) => {
+      if (!micPos) return null;
+
+      const groundDist = this.calculateGroundReflectionDistance(
+        spatial.sourcePosMeters, micPos, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
+      );
+      const groundTime = groundDist / SPEED_OF_SOUND;
+      const groundExtra = Math.max(0, groundTime - directDelay);
+
+      const directGain = refDist / effectiveDist;
+      const groundGain = refDist / groundDist;
+      const groundPolar = calculateGroundReflectionPolarGain(
+        micPattern, spatial.sourcePosMeters, micPos, micAngle,
+        STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
+      );
+      const patternRatio = groundPolar / safePatternGain(directPattern);
+      const baseAmp = (groundGain / directGain) * patternRatio;
+
+      return {
+        dist: groundDist,
+        delayTime: spatial.baseDelay + itd + groundExtra,
+        baseAmp,
+        airAbsorption: this.calculateAirAbsorption(groundDist),
+      };
+    };
+
+    return {
+      lowGain,
+      highGain,
+      crossFreq,
+      L: buildParams(this.micL, this.micLPattern, this.micLAngle, spatial.directPatternL, spatial.distL, spatial.delayL, spatial.itdL),
+      R: buildParams(this.micR, this.micRPattern, this.micRAngle, spatial.directPatternR, spatial.distR, spatial.delayR, spatial.itdR),
+      C: spatial.hasCenter
+        ? buildParams(this.micC, this.micCPattern, this.micCAngle, spatial.directPatternC, spatial.distC, spatial.delayC, spatial.itdC)
+        : null,
+    };
+  }
+
   /**
    * Add a track to the engine
    */
@@ -1037,33 +1139,27 @@ export class AudioEngine {
    * Uses polar pattern aware stereo response calculation
    */
   updateTrackAudioParams(id, track, nodes) {
-    const sourcePos = { x: track.x, y: track.y }; // Normalized position
-    const sourcePosMeters = this.normalizedToMeters(track.x, track.y);
-
-    // Calculate stereo response using new microphone simulation
-    // This includes polar pattern gain, distance attenuation, and delays
-    const stereoResponse = calculateStereoResponse(sourcePos, this.micConfig, STAGE_CONFIG);
-
-    const micResponses = stereoResponse.micResponses || {};
-    const hasCenter = !!nodes.hasCenter;
-
-    // Extract L/R gains (includes polar pattern and 1/d attenuation)
-    // Preserve sign for rear lobes - negative gain inverts phase via GainNode
-    const responseL = micResponses.L;
-    const responseR = micResponses.R;
-    const responseC = hasCenter ? micResponses.C : null;
-
-    const ampL = hasCenter && responseL ? responseL.gain : stereoResponse.left.gain;
-    const ampR = hasCenter && responseR ? responseR.gain : stereoResponse.right.gain;
-    const ampC = responseC ? responseC.gain : 0;
-    const directPatternL = responseL?.patternGain ?? 1;
-    const directPatternR = responseR?.patternGain ?? 1;
-    const directPatternC = responseC?.patternGain ?? 1;
-
-    // Track distances for air absorption (from mic responses)
-    const effectiveDistL = responseL?.distance || 3;
-    const effectiveDistR = responseR?.distance || 3;
-    const effectiveDistC = responseC?.distance || 3;
+    const spatial = this._getTrackSpatialParams(track, { hasCenter: nodes.hasCenter });
+    const {
+      sourcePosMeters,
+      hasCenter,
+      ampL,
+      ampR,
+      ampC,
+      directPatternL,
+      directPatternR,
+      directPatternC,
+      distL,
+      distR,
+      distC,
+      delayL,
+      delayR,
+      delayC,
+      baseDelay,
+      itdL,
+      itdR,
+      itdC,
+    } = spatial;
 
     // Apply track gain and mute/solo
     const hasSolo = this.hasSolo;
@@ -1075,11 +1171,7 @@ export class AudioEngine {
     // === INSTRUMENT DIRECTIVITY BLENDING ===
     // This is separate from mic polar patterns - it's the instrument radiation pattern
     // (blending between front mic 6 and bell mic 8 recordings)
-    const blendL = this.calculateDirectivityBlend(sourcePosMeters, this.micL);
-    const blendR = this.calculateDirectivityBlend(sourcePosMeters, this.micR);
-    const blendC = (hasCenter && this.micC)
-      ? this.calculateDirectivityBlend(sourcePosMeters, this.micC)
-      : { front: 1, bell: 0 };
+    const { blendL, blendR, blendC } = this._getDirectivityBlends(sourcePosMeters, hasCenter);
 
     // Use setTargetAtTime for smooth transitions to avoid zipper noise during dragging
     const now = this.context.currentTime;
@@ -1130,22 +1222,6 @@ export class AudioEngine {
 
     // === DELAYS (ITD) ===
     // Use delays from stereo response
-    const delayL = responseL?.delay ?? stereoResponse.left.delay;
-    const delayR = responseR?.delay ?? stereoResponse.right.delay;
-    const delayC = responseC?.delay ?? null;
-
-    // Base delay: average propagation time preserves depth timing cues
-    const refDistance = Math.abs(this.micConfig.micY);
-    const refTime = refDistance / SPEED_OF_SOUND;
-    const avgTime = (delayL + delayR) / 2;
-    const baseDelay = Math.max(0, avgTime - refTime);
-
-    // ITD: additional delay for the further channel
-    const minTime = (hasCenter && delayC !== null) ? Math.min(delayL, delayR, delayC) : Math.min(delayL, delayR);
-    const itdL = delayL - minTime;
-    const itdR = delayR - minTime;
-    const itdC = (hasCenter && delayC !== null) ? delayC - minTime : 0;
-
     nodes.delayL.delayTime.setTargetAtTime(baseDelay + itdL, now, rampTime);
     nodes.delayR.delayTime.setTargetAtTime(baseDelay + itdR, now, rampTime);
     if (nodes.delayC) {
@@ -1153,78 +1229,32 @@ export class AudioEngine {
     }
 
     // Air absorption - update filter banks (ISO 9613-1 frequency-dependent)
-    this.updateAirAbsorptionFilters(nodes.airAbsorbL, effectiveDistL, now, rampTime);
-    this.updateAirAbsorptionFilters(nodes.airAbsorbR, effectiveDistR, now, rampTime);
+    this.updateAirAbsorptionFilters(nodes.airAbsorbL, distL, now, rampTime);
+    this.updateAirAbsorptionFilters(nodes.airAbsorbR, distR, now, rampTime);
     if (nodes.airAbsorbC) {
-      this.updateAirAbsorptionFilters(nodes.airAbsorbC, effectiveDistC, now, rampTime);
+      this.updateAirAbsorptionFilters(nodes.airAbsorbC, distC, now, rampTime);
     }
 
     // Ground reflection (if enabled and nodes exist)
     if (nodes.groundDelayL && nodes.groundBaseGainL) {
-      if (this.groundReflectionEnabled) {
-        const groundModel = this.getGroundReflectionModelConfig();
-        const lowGain = groundModel.lowGain * STAGE_CONFIG.groundReflectionCoeff;
-        const highGain = groundModel.highGain * STAGE_CONFIG.groundReflectionCoeff;
-        const crossFreq = groundModel.crossoverHz;
+      const groundParams = this._getGroundReflectionParams(spatial);
+      if (groundParams && groundParams.L && groundParams.R) {
+        const { lowGain, highGain, crossFreq } = groundParams;
 
-        // Use meters coordinates for distance calculation
-        const groundDistL = this.calculateGroundReflectionDistance(
-          sourcePosMeters, this.micL, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-        );
-        const groundDistR = this.calculateGroundReflectionDistance(
-          sourcePosMeters, this.micR, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-        );
+        nodes.groundDelayL.delayTime.setTargetAtTime(groundParams.L.delayTime, now, rampTime);
+        nodes.groundDelayR.delayTime.setTargetAtTime(groundParams.R.delayTime, now, rampTime);
 
-        const groundTimeL = groundDistL / SPEED_OF_SOUND;
-        const groundTimeR = groundDistR / SPEED_OF_SOUND;
+        nodes.groundBaseGainL.gain.setTargetAtTime(groundParams.L.baseAmp, now, rampTime);
+        nodes.groundBaseGainR.gain.setTargetAtTime(groundParams.R.baseAmp, now, rampTime);
 
-        // Ground reflection delay must include baseDelay + ITD so it arrives AFTER direct sound
-        // Direct sound uses: baseDelay + itdL/itdR
-        // Ground reflection is extra path time (groundTime - directTime) on top of that
-        const groundExtraL = Math.max(0, groundTimeL - delayL);
-        const groundExtraR = Math.max(0, groundTimeR - delayR);
-        nodes.groundDelayL.delayTime.setTargetAtTime(baseDelay + itdL + groundExtraL, now, rampTime);
-        nodes.groundDelayR.delayTime.setTargetAtTime(baseDelay + itdR + groundExtraR, now, rampTime);
-
-        // Convert from direct-path attenuation to ground-path using pure 1/d law
-        // Both paths use unclamped inverse distance for accurate physics
-        // Ratio = groundGain / directGain = effectiveDist / groundDist
-        const refDist = 3; // Must match microphone-math.js refDistance
-        const directGainL = refDist / effectiveDistL;
-        const directGainR = refDist / effectiveDistR;
-        const groundGainL = refDist / groundDistL;
-        const groundGainR = refDist / groundDistR;
-
-        // Apply polar pattern gain for ground reflection (mirror source angle)
-        // Reflected sound comes from below ground - different incidence angle than direct
-        const groundPolarL = calculateGroundReflectionPolarGain(
-          this.micLPattern, sourcePosMeters, this.micL, this.micLAngle,
-          STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-        );
-        const groundPolarR = calculateGroundReflectionPolarGain(
-          this.micRPattern, sourcePosMeters, this.micR, this.micRAngle,
-          STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-        );
-
-        // Combined amplitude: distance ratio * reflection polar ratio
-        const patternRatioL = groundPolarL / safePatternGain(directPatternL);
-        const patternRatioR = groundPolarR / safePatternGain(directPatternR);
-        const baseAmpL = (groundGainL / directGainL) * patternRatioL;
-        const baseAmpR = (groundGainR / directGainR) * patternRatioR;
-        nodes.groundBaseGainL.gain.setTargetAtTime(baseAmpL, now, rampTime);
-        nodes.groundBaseGainR.gain.setTargetAtTime(baseAmpR, now, rampTime);
-
-        // Update air absorption for ground reflection (longer path = more HF loss)
         if (nodes.groundAirAbsorbL) {
-          const groundAbsorptionL = this.calculateAirAbsorption(groundDistL);
-          nodes.groundAirAbsorbL.forEach((filter, i) => {
-            filter.gain.setTargetAtTime(groundAbsorptionL[i].gainDb, now, rampTime);
+          groundParams.L.airAbsorption.forEach((filter, i) => {
+            nodes.groundAirAbsorbL[i].gain.setTargetAtTime(filter.gainDb, now, rampTime);
           });
         }
         if (nodes.groundAirAbsorbR) {
-          const groundAbsorptionR = this.calculateAirAbsorption(groundDistR);
-          nodes.groundAirAbsorbR.forEach((filter, i) => {
-            filter.gain.setTargetAtTime(groundAbsorptionR[i].gainDb, now, rampTime);
+          groundParams.R.airAbsorption.forEach((filter, i) => {
+            nodes.groundAirAbsorbR[i].gain.setTargetAtTime(filter.gainDb, now, rampTime);
           });
         }
 
@@ -1238,27 +1268,12 @@ export class AudioEngine {
         nodes.groundLowFilterR.frequency.setTargetAtTime(crossFreq, now, rampTime);
         nodes.groundHighFilterR.frequency.setTargetAtTime(crossFreq, now, rampTime);
 
-        if (nodes.groundDelayC && nodes.groundBaseGainC && this.micC && delayC !== null) {
-          const groundDistC = this.calculateGroundReflectionDistance(
-            sourcePosMeters, this.micC, STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-          );
-          const groundTimeC = groundDistC / SPEED_OF_SOUND;
-          const groundExtraC = Math.max(0, groundTimeC - delayC);
-          const directGainC = refDist / effectiveDistC;
-          const groundGainC = refDist / groundDistC;
-          const groundPolarC = calculateGroundReflectionPolarGain(
-            this.micCPattern, sourcePosMeters, this.micC, this.micCAngle,
-            STAGE_CONFIG.sourceHeight, STAGE_CONFIG.micHeight
-          );
-          const patternRatioC = groundPolarC / safePatternGain(directPatternC);
-          const baseAmpC = (groundGainC / directGainC) * patternRatioC;
-
-          nodes.groundDelayC.delayTime.setTargetAtTime(baseDelay + itdC + groundExtraC, now, rampTime);
-          nodes.groundBaseGainC.gain.setTargetAtTime(baseAmpC, now, rampTime);
+        if (nodes.groundDelayC && nodes.groundBaseGainC && groundParams.C) {
+          nodes.groundDelayC.delayTime.setTargetAtTime(groundParams.C.delayTime, now, rampTime);
+          nodes.groundBaseGainC.gain.setTargetAtTime(groundParams.C.baseAmp, now, rampTime);
           if (nodes.groundAirAbsorbC) {
-            const groundAbsorptionC = this.calculateAirAbsorption(groundDistC);
-            nodes.groundAirAbsorbC.forEach((filter, i) => {
-              filter.gain.setTargetAtTime(groundAbsorptionC[i].gainDb, now, rampTime);
+            groundParams.C.airAbsorption.forEach((filter, i) => {
+              nodes.groundAirAbsorbC[i].gain.setTargetAtTime(filter.gainDb, now, rampTime);
             });
           }
           nodes.groundLowGainC.gain.setTargetAtTime(lowGain, now, rampTime);
@@ -2208,56 +2223,24 @@ export class AudioEngine {
       if (track.muted) continue;
       if (hasSolo && !track.solo) continue;
 
-      // Use normalized position for stereo response calculation
-      const sourcePosNormalized = { x: track.x, y: track.y };
-      const sourcePos = this.normalizedToMeters(track.x, track.y);
-
-      // Calculate stereo response using microphone simulation (matches realtime)
-      const stereoResponse = calculateStereoResponse(sourcePosNormalized, this.micConfig, STAGE_CONFIG);
-
-      const micResponses = stereoResponse.micResponses || {};
-      const responseL = micResponses.L;
-      const responseR = micResponses.R;
-      const responseC = hasCenter ? micResponses.C : null;
-
-      // Use stereo response gains (includes polar pattern and distance attenuation)
-      // Use signed gains to preserve rear-lobe phase inversion
-      const ampL = hasCenter && responseL ? responseL.gain : stereoResponse.left.gain;
-      const ampR = hasCenter && responseR ? responseR.gain : stereoResponse.right.gain;
-      const ampC = responseC ? responseC.gain : 0;
-      const directPatternL = responseL?.patternGain ?? 1;
-      const directPatternR = responseR?.patternGain ?? 1;
-      const directPatternC = responseC?.patternGain ?? 1;
-
-      // Use stereo response delays
-      const timeL = responseL?.delay ?? stereoResponse.left.delay;
-      const timeR = responseR?.delay ?? stereoResponse.right.delay;
-      const timeC = responseC?.delay ?? null;
-
-      // Get distances from stereo response for air absorption
-      const distL = responseL?.distance || 3;
-      const distR = responseR?.distance || 3;
-      const distC = responseC?.distance || 3;
-
-      // Base delay: preserves depth timing cues (relative to front of stage)
-      const refDistance = Math.abs(this.micConfig.micY);
-      const refTime = refDistance / SPEED_OF_SOUND;
-      const avgTime = (timeL + timeR) / 2;
-      const baseDelay = Math.max(0, avgTime - refTime);
-
-      // ITD: L/R difference
-      const minTime = (hasCenter && timeC !== null) ? Math.min(timeL, timeR, timeC) : Math.min(timeL, timeR);
-      const itdL = timeL - minTime;
-      const itdR = timeR - minTime;
-      const itdC = (hasCenter && timeC !== null) ? timeC - minTime : 0;
+      const spatial = this._getTrackSpatialParams(track, { hasCenter });
+      const {
+        sourcePosMeters,
+        ampL,
+        ampR,
+        ampC,
+        distL,
+        distR,
+        distC,
+        baseDelay,
+        itdL,
+        itdR,
+        itdC,
+      } = spatial;
 
       // Check for directivity blending
       const hasDirectivity = track.frontBuffer && track.bellBuffer;
-      const blendL = this.calculateDirectivityBlend(sourcePos, this.micL);
-      const blendR = this.calculateDirectivityBlend(sourcePos, this.micR);
-      const blendC = (hasCenter && this.micC)
-        ? this.calculateDirectivityBlend(sourcePos, this.micC)
-        : { front: 1, bell: 0 };
+      const { blendL, blendR, blendC } = this._getDirectivityBlends(sourcePosMeters, spatial.hasCenter);
 
       // Create mixer nodes for blending front/bell sources
       const mixerL = offlineContext.createGain();
