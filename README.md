@@ -179,6 +179,14 @@ Add concert hall ambience with multiple reverb presets:
 - **Depth-Based Mode**: Instruments farther back on stage receive more reverb, creating natural depth
 - **Uniform Mode**: Equal reverb for all instruments regardless of position
 
+### Master Loudness & Metering
+
+Dial in overall mix loudness with clear feedback:
+
+- **Master Gain in dB**: -36 dB to +30 dB range for precise control
+- **Auto Loudness**: Offline analysis of the full mix (95th percentile RMS) targets -18 dBFS while respecting a -1 dBFS peak ceiling
+- **Real-Time Meter**: Shows output RMS dBFS vs target and delta
+
 ### Export
 
 Render your mix to audio files:
@@ -192,7 +200,7 @@ Render your mix to audio files:
 Your work is automatically saved:
 
 - Track positions, gains, mute/solo states
-- Master gain, reverb settings
+- Master gain (dB), auto loudness state, reverb settings
 - Full microphone configuration (technique, pattern, spacing, angle, center settings)
 - Ground reflection model selection
 - Restored on page reload with confirmation prompt
@@ -255,6 +263,8 @@ Per-Track: Mixer → AnalyserNode (for real-time level visualization)
 ```
 
 For Decca Tree, center mic has independent signal path with -3dB equal-power pan to L/R.
+
+Master output is also metered with a post-gain analyzer for the realtime loudness display.
 
 ## Development
 
