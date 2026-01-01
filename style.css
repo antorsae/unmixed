@@ -645,6 +645,8 @@ button.primary:hover {
   gap: 10px;
   font-size: 13px;
   color: var(--ink-soft);
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 #master-gain {
@@ -652,10 +654,68 @@ button.primary:hover {
   accent-color: var(--accent);
 }
 
+#master-gain:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 #master-gain-value {
-  min-width: 36px;
+  min-width: 58px;
   text-align: right;
   font-family: "SF Mono", Monaco, monospace;
+}
+
+.master-auto-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.master-auto-toggle input {
+  accent-color: var(--accent);
+}
+
+.master-meter {
+  width: 120px;
+  height: 6px;
+  border-radius: 999px;
+  background: #efe5d4;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.master-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #c9733c 0%, #2f7a45 65%, #a64b4b 100%);
+  transition: width 0.08s linear;
+}
+
+.master-meter-text {
+  font-size: 12px;
+  font-family: "SF Mono", Monaco, monospace;
+  color: var(--ink-soft);
+}
+
+.master-meter-text.meter-ok {
+  color: #2f7a45;
+}
+
+.master-meter-text.meter-low {
+  color: #8f5b2f;
+}
+
+.master-meter-text.meter-hot {
+  color: #a64b4b;
+}
+
+.master-auto-status {
+  font-size: 11px;
+  color: var(--ink-soft);
+  opacity: 0.8;
 }
 
 /* Control Grid */

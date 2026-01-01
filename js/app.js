@@ -16,7 +16,8 @@ const state = {
   tracks: new Map(), // trackId -> full track data
   currentProfile: null,
   currentProfileName: null,
-  masterGain: 1.0,
+  masterGainDb: 0,
+  masterGainAuto: true,
   reverbPreset: 'none',
   reverbMode: 'depth',
   reverbWetDb: 0,
@@ -36,6 +37,11 @@ let audioEngine = null;
 let stageCanvas = null;
 let reverbManager = null;
 let isTrackDragActive = false;
+let masterMeterFrameId = null;
+let masterMeterSmoothedDb = null;
+let autoGainController = null;
+let autoGainTimer = null;
+let autoGainRequestId = 0;
 
 // Noise gate worker
 let noiseGateWorker = null;
@@ -58,6 +64,17 @@ const NOISE_FLOOR_ANALYSIS = {
   maxWindows: 1000,
   minDb: -120,
 };
+
+const MASTER_GAIN_DB_MIN = -36;
+const MASTER_GAIN_DB_MAX = 30;
+const MASTER_TARGET_RMS_DB = -18;
+const MASTER_PEAK_LIMIT_DB = -1;
+const MASTER_METER_RANGE_DB = 12;
+const MASTER_ANALYSIS_SAMPLE_RATE = 22050;
+const MASTER_ANALYSIS_WINDOW_MS = 200;
+const MASTER_ANALYSIS_PERCENTILE = 0.95;
+const MASTER_ANALYSIS_MIN_DB = -80;
+const MASTER_AUTO_DEBOUNCE_MS = 800;
 
 /**
  * Initialize the application
@@ -143,6 +160,10 @@ function cacheElements() {
   elements.timeDisplay = document.getElementById('time-display');
   elements.masterGain = document.getElementById('master-gain');
   elements.masterGainValue = document.getElementById('master-gain-value');
+  elements.masterAuto = document.getElementById('master-auto');
+  elements.masterMeterText = document.getElementById('master-meter-text');
+  elements.masterMeterFill = document.getElementById('master-meter-fill');
+  elements.masterAutoStatus = document.getElementById('master-auto-status');
   elements.reverbPreset = document.getElementById('reverb-preset');
   elements.reverbWet = document.getElementById('reverb-wet');
   elements.reverbWetValue = document.getElementById('reverb-wet-value');
@@ -214,6 +235,7 @@ function setupEventListeners() {
 
   // Master controls
   elements.masterGain.addEventListener('input', handleMasterGainChange);
+  elements.masterAuto?.addEventListener('change', handleMasterAutoToggle);
 
   // Reverb controls
   elements.reverbPreset.addEventListener('change', handleReverbPresetChange);
@@ -299,6 +321,7 @@ function setupStageCallbacks() {
       audioEngine.scheduleGraphRebuild({ delayMs: 0 });
       updateTrackListItem(trackId);
       markUnsaved();
+      maybeScheduleAutoMasterGainUpdate();
     }
   };
 
@@ -322,6 +345,7 @@ function setupStageCallbacks() {
       audioEngine.updateTrackGain(trackId, newGain);
       updateTrackListItem(trackId);
       markUnsaved();
+      maybeScheduleAutoMasterGainUpdate();
     }
   };
 
@@ -332,6 +356,7 @@ function setupStageCallbacks() {
       audioEngine.updateTrackGain(trackId, newGain);
       updateTrackListItem(trackId);
       markUnsaved();
+      maybeScheduleAutoMasterGainUpdate();
     }
   };
 
@@ -342,6 +367,7 @@ function setupStageCallbacks() {
       audioEngine.updateTrackMuted(trackId, muted);
       updateTrackListItem(trackId);
       markUnsaved();
+      maybeScheduleAutoMasterGainUpdate();
     }
   };
 
@@ -352,6 +378,7 @@ function setupStageCallbacks() {
       audioEngine.updateTrackSolo(trackId, solo);
       updateTrackListItem(trackId);
       markUnsaved();
+      maybeScheduleAutoMasterGainUpdate();
     }
   };
 
@@ -365,6 +392,7 @@ function setupStageCallbacks() {
     }
     audioEngine.setMicSeparation(separation);
     markUnsaved();
+    maybeScheduleAutoMasterGainUpdate();
   };
 
   // Full mic config change callback (from canvas drag)
@@ -374,6 +402,7 @@ function setupStageCallbacks() {
     updateMicControlsUI();
     audioEngine.setMicConfig(config);
     markUnsaved();
+    maybeScheduleAutoMasterGainUpdate();
   };
 
   // Initialize canvas with mic config from state
@@ -887,6 +916,8 @@ async function finalizeTracks() {
   // Apply noise gate asynchronously if enabled (runs in Web Worker)
   if (state.noiseGateEnabled) {
     applyNoiseGateToAllTracks();
+  } else {
+    maybeScheduleAutoMasterGainUpdate();
   }
 }
 
@@ -899,6 +930,15 @@ function clearTracks() {
   state.tracks.clear();
   elements.trackList.innerHTML = '';
   disableExportButtons();
+  if (autoGainTimer) {
+    clearTimeout(autoGainTimer);
+    autoGainTimer = null;
+  }
+  if (autoGainController) {
+    autoGainController.abort();
+    autoGainController = null;
+  }
+  setMasterAutoStatus('');
 }
 
 /**
@@ -997,6 +1037,7 @@ function createTrackListItem(track) {
     audioEngine.updateTrackMuted(track.id, track.muted);
     stageCanvas.updateTrackMuted(track.id, track.muted);
     markUnsaved();
+    maybeScheduleAutoMasterGainUpdate();
   });
 
   xSlider.addEventListener('input', () => {
@@ -1006,6 +1047,7 @@ function createTrackListItem(track) {
     audioEngine.updateTrackPosition(track.id, x, track.y);
     stageCanvas.updateTrackPosition(track.id, x, track.y);
     markUnsaved();
+    maybeScheduleAutoMasterGainUpdate();
   });
 
   ySlider.addEventListener('input', () => {
@@ -1015,6 +1057,7 @@ function createTrackListItem(track) {
     audioEngine.updateTrackPosition(track.id, track.x, y);
     stageCanvas.updateTrackPosition(track.id, track.x, y);
     markUnsaved();
+    maybeScheduleAutoMasterGainUpdate();
   });
 
   xValue.addEventListener('change', () => {
@@ -1027,6 +1070,7 @@ function createTrackListItem(track) {
     audioEngine.updateTrackPosition(track.id, x, track.y);
     stageCanvas.updateTrackPosition(track.id, x, track.y);
     markUnsaved();
+    maybeScheduleAutoMasterGainUpdate();
   });
 
   yValue.addEventListener('change', () => {
@@ -1039,6 +1083,7 @@ function createTrackListItem(track) {
     audioEngine.updateTrackPosition(track.id, track.x, y);
     stageCanvas.updateTrackPosition(track.id, track.x, y);
     markUnsaved();
+    maybeScheduleAutoMasterGainUpdate();
   });
 
   gainSlider.addEventListener('input', () => {
@@ -1046,6 +1091,7 @@ function createTrackListItem(track) {
     track.gain = gain;
     audioEngine.updateTrackGain(track.id, gain);
     stageCanvas.updateTrackGain(track.id, gain);
+    maybeScheduleAutoMasterGainUpdate();
     markUnsaved();
   });
 
@@ -1055,6 +1101,7 @@ function createTrackListItem(track) {
     audioEngine.updateTrackSolo(track.id, track.solo);
     stageCanvas.updateTrackSolo(track.id, track.solo);
     markUnsaved();
+    maybeScheduleAutoMasterGainUpdate();
   });
 
   // Click to select
@@ -1126,6 +1173,7 @@ function resetTrackPosition(trackId) {
   stageCanvas.updateTrackPosition(trackId, track.x, track.y);
   updateTrackListItem(trackId);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1140,6 +1188,7 @@ function resetPositions() {
   }
   buildTrackList();
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1160,6 +1209,7 @@ function resetAll() {
   }
   buildTrackList();
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1171,10 +1221,12 @@ async function togglePlayback() {
   if (audioEngine.isPlaying) {
     audioEngine.pause();
     stageCanvas.stopAnimationLoop();
+    stopMasterMeterLoop();
     updatePlayButton(false);
   } else {
     await audioEngine.play();
     stageCanvas.startAnimationLoop();
+    startMasterMeterLoop();
     updatePlayButton(true);
   }
 }
@@ -1185,6 +1237,7 @@ async function togglePlayback() {
 function stopPlayback() {
   audioEngine.stop();
   stageCanvas.stopAnimationLoop();
+  stopMasterMeterLoop();
   updatePlayButton(false);
   updateTimeDisplay(0, audioEngine.duration);
 }
@@ -1210,11 +1263,16 @@ function handleSeek(e) {
  * Handle master gain change
  */
 function handleMasterGainChange(e) {
-  const gain = parseFloat(e.target.value);
-  state.masterGain = gain;
-  audioEngine.setMasterGain(gain);
-  elements.masterGainValue.textContent = gain.toFixed(2);
-  markUnsaved();
+  const gainDb = parseFloat(e.target.value);
+  if (!Number.isFinite(gainDb)) return;
+  if (state.masterGainAuto) {
+    state.masterGainAuto = false;
+    if (elements.masterAuto) {
+      elements.masterAuto.checked = false;
+    }
+    setMasterAutoStatus('');
+  }
+  setMasterGainDb(gainDb);
 }
 
 /**
@@ -1224,6 +1282,7 @@ function handleReverbPresetChange(e) {
   state.reverbPreset = e.target.value;
   updateReverb();
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1233,6 +1292,7 @@ function handleReverbModeChange(e) {
   state.reverbMode = e.target.value;
   audioEngine.setReverbMode(state.reverbMode);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 function dbToGain(db) {
@@ -1250,6 +1310,192 @@ function formatDb(db) {
   return `${sign}${rounded.toFixed(1)} dB`;
 }
 
+function clampMasterGainDb(db) {
+  if (!Number.isFinite(db)) return 0;
+  return Math.max(MASTER_GAIN_DB_MIN, Math.min(MASTER_GAIN_DB_MAX, db));
+}
+
+function setMasterGainDb(db, { skipSave = false } = {}) {
+  const clampedDb = clampMasterGainDb(db);
+  state.masterGainDb = clampedDb;
+  if (audioEngine) {
+    audioEngine.setMasterGain(dbToGain(clampedDb));
+  }
+  if (elements.masterGain) {
+    elements.masterGain.value = clampedDb;
+    elements.masterGain.disabled = state.masterGainAuto;
+  }
+  if (elements.masterGainValue) {
+    elements.masterGainValue.textContent = formatDb(clampedDb);
+  }
+  if (!skipSave) {
+    markUnsaved();
+  }
+}
+
+function setMasterAutoStatus(text) {
+  if (!elements.masterAutoStatus) return;
+  elements.masterAutoStatus.textContent = text || '';
+  elements.masterAutoStatus.classList.toggle('hidden', !text);
+}
+
+function handleMasterAutoToggle(e) {
+  const enabled = e.target.checked;
+  state.masterGainAuto = enabled;
+  if (elements.masterGain) {
+    elements.masterGain.disabled = enabled;
+  }
+  if (!enabled) {
+    if (autoGainTimer) {
+      clearTimeout(autoGainTimer);
+      autoGainTimer = null;
+    }
+    if (autoGainController) {
+      autoGainController.abort();
+      autoGainController = null;
+    }
+    setMasterAutoStatus('');
+  } else {
+    scheduleAutoMasterGainUpdate({ delayMs: 0 });
+  }
+  markUnsaved();
+}
+
+function scheduleAutoMasterGainUpdate({ delayMs = MASTER_AUTO_DEBOUNCE_MS } = {}) {
+  if (!audioEngine) return;
+  if (!state.masterGainAuto || state.tracks.size === 0) return;
+  if (autoGainTimer) {
+    clearTimeout(autoGainTimer);
+  }
+  autoGainTimer = setTimeout(() => {
+    autoGainTimer = null;
+    updateAutoMasterGain();
+  }, delayMs);
+}
+
+async function updateAutoMasterGain() {
+  if (!audioEngine) return;
+  if (!state.masterGainAuto || state.tracks.size === 0) return;
+
+  const requestId = ++autoGainRequestId;
+  if (autoGainController) {
+    autoGainController.abort();
+  }
+  autoGainController = new AbortController();
+  const controller = autoGainController;
+  setMasterAutoStatus('Auto: analyzing...');
+
+  try {
+    const analysis = await audioEngine.analyzeMixLoudness({
+      sampleRate: MASTER_ANALYSIS_SAMPLE_RATE,
+      windowMs: MASTER_ANALYSIS_WINDOW_MS,
+      percentile: MASTER_ANALYSIS_PERCENTILE,
+      minDb: MASTER_ANALYSIS_MIN_DB,
+      signal: autoGainController.signal,
+      onProgress: (progress) => {
+        if (requestId !== autoGainRequestId || !state.masterGainAuto) return;
+        const percent = Math.round(progress * 100);
+        setMasterAutoStatus(`Auto: analyzing ${percent}%`);
+      },
+    });
+
+    if (requestId !== autoGainRequestId || !state.masterGainAuto) return;
+
+    if (!Number.isFinite(analysis.percentileDb) || analysis.windowCount === 0) {
+      setMasterAutoStatus('Auto: no signal');
+      if (autoGainController === controller) {
+        autoGainController = null;
+      }
+      return;
+    }
+
+    let gainDb = MASTER_TARGET_RMS_DB - analysis.percentileDb;
+    if (Number.isFinite(analysis.peakDb)) {
+      const predictedPeak = analysis.peakDb + gainDb;
+      if (predictedPeak > MASTER_PEAK_LIMIT_DB) {
+        gainDb -= (predictedPeak - MASTER_PEAK_LIMIT_DB);
+      }
+    }
+
+    gainDb = clampMasterGainDb(gainDb);
+    setMasterGainDb(gainDb, { skipSave: true });
+    setMasterAutoStatus(`Auto: ${formatDb(gainDb)}`);
+    if (autoGainController === controller) {
+      autoGainController = null;
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    console.error('Auto master analysis failed:', error);
+    setMasterAutoStatus('Auto: failed');
+    if (autoGainController === controller) {
+      autoGainController = null;
+    }
+  }
+}
+
+function updateMasterMeterDisplay() {
+  if (!elements.masterMeterText || !elements.masterMeterFill) return;
+  if (!audioEngine) return;
+
+  const currentDb = audioEngine.getMasterLevelDb();
+  if (!Number.isFinite(currentDb) || currentDb === -Infinity) {
+    const targetLabel = formatDb(MASTER_TARGET_RMS_DB).replace(' dB', ' dBFS');
+    elements.masterMeterText.textContent = `Output: -- dBFS | Target ${targetLabel}`;
+    elements.masterMeterText.classList.remove('meter-ok', 'meter-low', 'meter-hot');
+    elements.masterMeterFill.style.width = '0%';
+    masterMeterSmoothedDb = null;
+    return;
+  }
+
+  const smoothing = 0.2;
+  if (masterMeterSmoothedDb === null) {
+    masterMeterSmoothedDb = currentDb;
+  } else {
+    masterMeterSmoothedDb = currentDb * smoothing + masterMeterSmoothedDb * (1 - smoothing);
+  }
+
+  const delta = masterMeterSmoothedDb - MASTER_TARGET_RMS_DB;
+  const outputLabel = formatDb(masterMeterSmoothedDb).replace(' dB', ' dBFS');
+  const targetLabel = formatDb(MASTER_TARGET_RMS_DB).replace(' dB', ' dBFS');
+  const deltaLabel = formatDb(delta);
+
+  elements.masterMeterText.textContent = `Output: ${outputLabel} | Target ${targetLabel} | Delta ${deltaLabel}`;
+  elements.masterMeterText.classList.remove('meter-ok', 'meter-low', 'meter-hot');
+  if (Math.abs(delta) <= 1) {
+    elements.masterMeterText.classList.add('meter-ok');
+  } else if (delta < -1) {
+    elements.masterMeterText.classList.add('meter-low');
+  } else {
+    elements.masterMeterText.classList.add('meter-hot');
+  }
+
+  const clampedDelta = Math.max(-MASTER_METER_RANGE_DB, Math.min(MASTER_METER_RANGE_DB, delta));
+  const percent = ((clampedDelta + MASTER_METER_RANGE_DB) / (MASTER_METER_RANGE_DB * 2)) * 100;
+  elements.masterMeterFill.style.width = `${percent.toFixed(1)}%`;
+}
+
+function startMasterMeterLoop() {
+  if (masterMeterFrameId) return;
+  const tick = () => {
+    updateMasterMeterDisplay();
+    masterMeterFrameId = requestAnimationFrame(tick);
+  };
+  masterMeterFrameId = requestAnimationFrame(tick);
+}
+
+function stopMasterMeterLoop() {
+  if (masterMeterFrameId) {
+    cancelAnimationFrame(masterMeterFrameId);
+    masterMeterFrameId = null;
+  }
+  updateMasterMeterDisplay();
+}
+
+function maybeScheduleAutoMasterGainUpdate() {
+  if (!state.masterGainAuto) return;
+  scheduleAutoMasterGainUpdate();
+}
+
 function updateReverbWetVisibility() {
   if (!elements.reverbWetControl) return;
   elements.reverbWetControl.classList.toggle('hidden', state.reverbPreset === 'none');
@@ -1264,6 +1510,7 @@ function handleReverbWetChange(e) {
   audioEngine.setReverbWet(dbToGain(wetDb));
   elements.reverbWetValue.textContent = formatDb(wetDb);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1281,6 +1528,7 @@ function handleGroundReflectionChange(e) {
     }, 300);
   }
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1291,6 +1539,7 @@ function handleGroundReflectionModelChange(e) {
   state.groundReflectionModel = modelId;
   audioEngine.setGroundReflectionModel(modelId);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1308,6 +1557,7 @@ function handleMicTechniqueChange(e) {
   audioEngine.setMicConfig(state.micConfig);
   stageCanvas.setMicConfig(state.micConfig);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1319,6 +1569,7 @@ function handleMicPatternChange(e) {
   state.micConfig = audioEngine.getMicConfig();
   stageCanvas.setMicConfig(state.micConfig);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1332,6 +1583,7 @@ function handleMicSpacingChange(e) {
   audioEngine.setMicSeparation(spacing);
   stageCanvas.setMicSeparation(spacing);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1344,6 +1596,7 @@ function handleMicAngleChange(e) {
   audioEngine.setMicAngle(angle);
   stageCanvas.setMicAngle(angle);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1356,6 +1609,7 @@ function handleMicCenterDepthChange(e) {
   audioEngine.setCenterDepth(depth);
   stageCanvas.setCenterDepth(depth);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1367,6 +1621,7 @@ function handleMicCenterLevelChange(e) {
   elements.micCenterLevelValue.textContent = `${level.toFixed(1)}dB`;
   audioEngine.setCenterLevel(level);
   markUnsaved();
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -1874,6 +2129,7 @@ async function applyNoiseGateToAllTracks() {
   }
 
   setStatus(`Loaded ${state.tracks.size} tracks (noise gate applied)`, 'success');
+  maybeScheduleAutoMasterGainUpdate();
 }
 
 /**
@@ -2015,6 +2271,7 @@ async function reprocessTracksWithNoiseGate() {
   if (thisGeneration === noiseGateGeneration) {
     setStatus(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate removed', 'success');
     showToast(state.noiseGateEnabled ? 'Noise gate applied' : 'Noise gate disabled', 'info');
+    maybeScheduleAutoMasterGainUpdate();
   }
 }
 
@@ -2068,6 +2325,7 @@ function updateTimeDisplay(currentTime, duration) {
  */
 function handlePlaybackEnd() {
   stageCanvas.stopAnimationLoop();
+  stopMasterMeterLoop();
   updatePlayButton(false);
 }
 
@@ -2076,8 +2334,14 @@ function handlePlaybackEnd() {
  */
 function updateTransportUI() {
   updateTimeDisplay(0, audioEngine.duration);
-  elements.masterGain.value = state.masterGain;
-  elements.masterGainValue.textContent = state.masterGain.toFixed(2);
+  elements.masterGain.value = state.masterGainDb;
+  elements.masterGain.disabled = state.masterGainAuto;
+  elements.masterGainValue.textContent = formatDb(state.masterGainDb);
+  if (elements.masterAuto) {
+    elements.masterAuto.checked = state.masterGainAuto;
+  }
+  setMasterAutoStatus('');
+  updateMasterMeterDisplay();
   elements.reverbPreset.value = state.reverbPreset;
   elements.reverbWet.value = state.reverbWetDb;
   elements.reverbWetValue.textContent = formatDb(state.reverbWetDb);
@@ -2223,7 +2487,11 @@ async function restoreSession() {
   if (!session) return;
 
   // Apply settings
-  state.masterGain = session.masterGain ?? 1.0;
+  const savedMasterGainDb = Number.isFinite(session.masterGainDb)
+    ? session.masterGainDb
+    : gainToDb(session.masterGain ?? 1.0);
+  state.masterGainDb = clampMasterGainDb(savedMasterGainDb);
+  state.masterGainAuto = session.masterGainAuto ?? true;
   state.reverbPreset = session.reverbPreset ?? 'concert-hall';
   state.reverbMode = session.reverbMode ?? 'depth';
   const savedWetDb = Number.isFinite(session.reverbWetDb)
@@ -2242,7 +2510,7 @@ async function restoreSession() {
     state.micSeparation = state.micConfig.spacing;
   }
 
-  audioEngine.setMasterGain(state.masterGain);
+  audioEngine.setMasterGain(dbToGain(state.masterGainDb));
   audioEngine.setMicConfig(state.micConfig);
   audioEngine.setGroundReflection(state.groundReflectionEnabled);
   audioEngine.setGroundReflectionModel(state.groundReflectionModel);
@@ -2288,6 +2556,10 @@ async function restoreSession() {
     }
   }
 
+  if (state.masterGainAuto) {
+    scheduleAutoMasterGainUpdate({ delayMs: 0 });
+  }
+
   state.hasUnsavedChanges = false;
 }
 
@@ -2299,7 +2571,8 @@ function saveCurrentSession() {
     tracks: state.tracks,
     currentProfile: state.currentProfile,
     currentProfileName: state.currentProfileName,
-    masterGain: state.masterGain,
+    masterGainDb: state.masterGainDb,
+    masterGainAuto: state.masterGainAuto,
     reverbPreset: state.reverbPreset,
     reverbMode: state.reverbMode,
     micSeparation: state.micSeparation,

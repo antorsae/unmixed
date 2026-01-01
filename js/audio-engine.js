@@ -26,6 +26,8 @@ const VISUAL_NOISE_MARGIN_DB = 12;
 const VISUAL_DYNAMIC_RANGE_DB = 40;
 const DEFAULT_NOISE_FLOOR_DB = -90;
 const ANALYSER_FFT_SIZE = 2048;
+const MASTER_ANALYSER_FFT_SIZE = 4096;
+const MASTER_METER_WARMUP_SECONDS = 0.05;
 const GRAPH_CROSSFADE_SECONDS = 0.12;
 const GRAPH_REBUILD_DEBOUNCE_MS = 140;
 const DEFAULT_GRAPH_SWAP_MODE = 'nonOverlap';
@@ -89,6 +91,9 @@ export class AudioEngine {
   constructor() {
     this.context = null;
     this.masterGainNode = null;
+    this.masterAnalyser = null;
+    this.masterAnalyserFloatData = null;
+    this.masterAnalyserByteData = null;
     this.activeBus = null;
     this.pendingBus = null;
     this.pendingTrackNodes = null;
@@ -188,6 +193,16 @@ export class AudioEngine {
     this.masterGainNode = this.context.createGain();
     this.masterGainNode.gain.value = this.masterGain;
     this.masterGainNode.connect(this.masterLimiter);
+
+    // Master analyser for output metering (tap post-master, pre-limiter)
+    this.masterAnalyser = this.context.createAnalyser();
+    this.masterAnalyser.fftSize = MASTER_ANALYSER_FFT_SIZE;
+    this.masterAnalyser.smoothingTimeConstant = 0.3;
+    this.masterGainNode.connect(this.masterAnalyser);
+    this.masterAnalyserFloatData = typeof this.masterAnalyser.getFloatTimeDomainData === 'function'
+      ? new Float32Array(this.masterAnalyser.fftSize)
+      : null;
+    this.masterAnalyserByteData = this.masterAnalyserFloatData ? null : new Uint8Array(this.masterAnalyser.fftSize);
 
     // Create initial mix bus (A/B graph crossfade support)
     this.activeBus = this._createBus({ initialGain: 1 });
@@ -1868,6 +1883,49 @@ export class AudioEngine {
   }
 
   /**
+   * Get real-time master output level in dBFS (pre-limiter)
+   * @returns {number} RMS level in dBFS or -Infinity if silent/idle
+   */
+  getMasterLevelDb() {
+    if (!this.masterAnalyser || !this.context) return -Infinity;
+    if (!this.isPlaying) return -Infinity;
+
+    const playbackTime = this.context.currentTime - this.startTime;
+    if (playbackTime < MASTER_METER_WARMUP_SECONDS) return -Infinity;
+
+    const analyser = this.masterAnalyser;
+    let sumSquares = 0;
+    let sampleCount = 0;
+
+    if (this.masterAnalyserFloatData && typeof analyser.getFloatTimeDomainData === 'function') {
+      if (this.masterAnalyserFloatData.length !== analyser.fftSize) {
+        this.masterAnalyserFloatData = new Float32Array(analyser.fftSize);
+      }
+      analyser.getFloatTimeDomainData(this.masterAnalyserFloatData);
+      sampleCount = this.masterAnalyserFloatData.length;
+      for (let i = 0; i < sampleCount; i++) {
+        const v = this.masterAnalyserFloatData[i];
+        sumSquares += v * v;
+      }
+    } else {
+      if (!this.masterAnalyserByteData || this.masterAnalyserByteData.length !== analyser.fftSize) {
+        this.masterAnalyserByteData = new Uint8Array(analyser.fftSize);
+      }
+      analyser.getByteTimeDomainData(this.masterAnalyserByteData);
+      sampleCount = this.masterAnalyserByteData.length;
+      for (let i = 0; i < sampleCount; i++) {
+        const v = (this.masterAnalyserByteData[i] - 128) / 128;
+        sumSquares += v * v;
+      }
+    }
+
+    if (!sampleCount) return -Infinity;
+    const rms = Math.sqrt(sumSquares / sampleCount);
+    if (!Number.isFinite(rms) || rms <= 0) return -Infinity;
+    return 20 * Math.log10(rms);
+  }
+
+  /**
    * Get real-time audio level for a track (0..1 range)
    * Uses RMS detection with per-track noise floor gating
    * @param {string} trackId - Track identifier
@@ -2075,37 +2133,42 @@ export class AudioEngine {
   }
 
   /**
-   * Render the mix offline for export
+   * Render the mix offline with configurable options.
    */
-  async renderOffline(onProgress, signal) {
-    // Use context's sample rate to match playback and avoid resampling
-    const sampleRate = this.context ? this.context.sampleRate : 44100;
-    const length = Math.ceil(this.duration * sampleRate);
-    const offlineContext = new OfflineAudioContext(2, length, sampleRate);
+  async _renderOfflineMix({ sampleRate, masterGain, includeLimiter, onProgress, signal }) {
+    const targetSampleRate = sampleRate || (this.context ? this.context.sampleRate : 44100);
+    const length = Math.ceil(this.duration * targetSampleRate);
+    const offlineContext = new OfflineAudioContext(2, length, targetSampleRate);
 
-    // Create master limiter (matches realtime chain)
-    const masterLimiter = offlineContext.createDynamicsCompressor();
-    masterLimiter.threshold.value = -1;
-    masterLimiter.knee.value = 0;
-    masterLimiter.ratio.value = 20;
-    masterLimiter.attack.value = 0.001;
-    masterLimiter.release.value = 0.05;
-    masterLimiter.connect(offlineContext.destination);
+    const masterGainValue = Number.isFinite(masterGain) ? masterGain : this.masterGain;
+    let masterDestination = offlineContext.destination;
+
+    if (includeLimiter) {
+      // Create master limiter (matches realtime chain)
+      const masterLimiter = offlineContext.createDynamicsCompressor();
+      masterLimiter.threshold.value = -1;
+      masterLimiter.knee.value = 0;
+      masterLimiter.ratio.value = 20;
+      masterLimiter.attack.value = 0.001;
+      masterLimiter.release.value = 0.05;
+      masterLimiter.connect(offlineContext.destination);
+      masterDestination = masterLimiter;
+    }
 
     // Create master gain
-    const masterGain = offlineContext.createGain();
-    masterGain.gain.value = this.masterGain;
-    masterGain.connect(masterLimiter);
+    const masterGainNode = offlineContext.createGain();
+    masterGainNode.gain.value = masterGainValue;
+    masterGainNode.connect(masterDestination);
 
     // Create stereo merger
     const stereoMerger = offlineContext.createChannelMerger(2);
-    stereoMerger.connect(masterGain);
+    stereoMerger.connect(masterGainNode);
 
     // Create reverb
     let reverbConvolver = null;
     const reverbGain = offlineContext.createGain();
     reverbGain.gain.value = this.reverbPreset === 'none' ? 0 : 1;
-    reverbGain.connect(masterGain);
+    reverbGain.connect(masterGainNode);
 
     if (this.reverbImpulseBuffer && this.reverbPreset !== 'none') {
       reverbConvolver = offlineContext.createConvolver();
@@ -2532,6 +2595,108 @@ export class AudioEngine {
       clearInterval(progressInterval);
       throw error;
     }
+  }
+
+  /**
+   * Render the mix offline for export
+   */
+  async renderOffline(onProgress, signal) {
+    const sampleRate = this.context ? this.context.sampleRate : 44100;
+    return this._renderOfflineMix({
+      sampleRate,
+      masterGain: this.masterGain,
+      includeLimiter: true,
+      onProgress,
+      signal,
+    });
+  }
+
+  /**
+   * Analyze mix loudness using a low-res offline render.
+   */
+  async analyzeMixLoudness({
+    sampleRate = 22050,
+    windowMs = 200,
+    percentile = 0.95,
+    minDb = -80,
+    onProgress,
+    signal,
+  } = {}) {
+    const buffer = await this._renderOfflineMix({
+      sampleRate,
+      masterGain: 1,
+      includeLimiter: false,
+      onProgress,
+      signal,
+    });
+
+    return this._calculateBufferLoudness(buffer, { windowMs, percentile, minDb });
+  }
+
+  _calculateBufferLoudness(buffer, { windowMs, percentile, minDb }) {
+    const sampleRate = buffer.sampleRate;
+    const windowSamples = Math.max(1, Math.floor(sampleRate * windowMs / 1000));
+    const channelCount = buffer.numberOfChannels;
+    const left = buffer.getChannelData(0);
+    const right = channelCount > 1 ? buffer.getChannelData(1) : left;
+    const length = buffer.length;
+
+    const rmsValues = [];
+    let sumSquares = 0;
+    let sampleCount = 0;
+    let peak = 0;
+
+    for (let i = 0; i < length; i++) {
+      const l = left[i];
+      const r = right[i];
+      const power = 0.5 * (l * l + r * r);
+      sumSquares += power;
+      sampleCount += 1;
+
+      const abs = Math.max(Math.abs(l), Math.abs(r));
+      if (abs > peak) peak = abs;
+
+      if (sampleCount === windowSamples) {
+        const rms = Math.sqrt(sumSquares / sampleCount);
+        if (rms > 0) {
+          const db = 20 * Math.log10(rms);
+          if (db >= minDb) {
+            rmsValues.push(db);
+          }
+        }
+        sumSquares = 0;
+        sampleCount = 0;
+      }
+    }
+
+    if (sampleCount > 0) {
+      const rms = Math.sqrt(sumSquares / sampleCount);
+      if (rms > 0) {
+        const db = 20 * Math.log10(rms);
+        if (db >= minDb) {
+          rmsValues.push(db);
+        }
+      }
+    }
+
+    if (rmsValues.length === 0) {
+      return {
+        windowCount: 0,
+        percentileDb: -Infinity,
+        peakDb: peak > 0 ? 20 * Math.log10(peak) : -Infinity,
+      };
+    }
+
+    rmsValues.sort((a, b) => a - b);
+    const clampedPercentile = Math.max(0, Math.min(1, percentile));
+    const index = Math.floor(clampedPercentile * (rmsValues.length - 1));
+    const percentileDb = rmsValues[index];
+
+    return {
+      windowCount: rmsValues.length,
+      percentileDb,
+      peakDb: peak > 0 ? 20 * Math.log10(peak) : -Infinity,
+    };
   }
 
   /**
