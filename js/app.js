@@ -466,6 +466,10 @@ async function loadSelectedProfile() {
 async function loadProfile(profileKey, url, displayName) {
   if (state.isLoading) return;
 
+  // Reset divider text in case previous load failed
+  const divider = document.querySelector('#profile-upload-divider span');
+  if (divider) divider.textContent = 'OR';
+
   // Stop current playback and clear tracks
   stopPlayback();
   clearTracks();
@@ -506,10 +510,29 @@ async function loadProfile(profileKey, url, displayName) {
 
   } catch (error) {
     console.error('Failed to load profile:', error);
-    setStatus(error.message, 'error');
-    showToast(error.message, 'error');
     hideProgress();
     pendingFiles = []; // Clear pending files on error
+
+    // Check if this is a CORS/download failure
+    const isCorsError = error.message.includes('CORS') ||
+                        error.message.includes('central directory') ||
+                        error.message.includes('proxy') ||
+                        error.message.includes('Failed to fetch');
+
+    const profile = PROFILES[profileKey];
+    if (isCorsError && profile?.url) {
+      const filename = profile.url.split('/').pop();
+      const msg = `Download failed. <a href="${profile.url}" target="_blank" rel="noopener">Download ${filename}</a> manually, then upload below.`;
+      setStatus(msg, 'error');
+      showToast('Automatic download failed. See instructions above.', 'error');
+
+      // Change "OR" to "AND" to guide user
+      const divider = document.querySelector('#profile-upload-divider span');
+      if (divider) divider.textContent = 'AND';
+    } else {
+      setStatus(error.message, 'error');
+      showToast(error.message, 'error');
+    }
   }
 
   state.isLoading = false;
@@ -530,6 +553,10 @@ async function handleZipUpload(e) {
  */
 async function handleZipFile(file) {
   if (state.isLoading) return;
+
+  // Reset divider text in case previous download failed
+  const divider = document.querySelector('#profile-upload-divider span');
+  if (divider) divider.textContent = 'OR';
 
   stopPlayback();
   clearTracks();
@@ -2661,7 +2688,12 @@ function hideProgress() {
  * Set status text
  */
 function setStatus(text, type = 'info') {
-  elements.statusText.textContent = text;
+  // Use innerHTML if text contains HTML (for download links on error)
+  if (text.includes('<a ')) {
+    elements.statusText.innerHTML = text;
+  } else {
+    elements.statusText.textContent = text;
+  }
   elements.statusText.className = type;
 }
 
