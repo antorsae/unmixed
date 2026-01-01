@@ -44,7 +44,6 @@ export class StageCanvas {
     this.micDragStartCenterDepth = 1.5;
 
     // Polar pattern visualization settings
-    this.showPolarPatterns = true;
     this.polarPatternScale = 25; // Size of polar pattern visualization in pixels
 
     // Audio engine reference for real-time level metering
@@ -385,9 +384,12 @@ export class StageCanvas {
    * { L: {x, y, angle, pattern}, R: {x, y, angle, pattern}, C?: {...} }
    */
   getMicPositions() {
-    // Mic base position: centered horizontally, below the stage area
+    // Mic base position: centered horizontally, aligned with micY meters
     const centerX = this.stageOffsetX + this.stagePixelWidth / 2;
-    const micY = this.stageOffsetY + this.stagePixelHeight + 20; // Below the stage
+    const baseMicY = Number.isFinite(this.micConfig?.micY)
+      ? this.micConfig.micY
+      : STAGE_CONFIG.micY;
+    const micY = this.stageOffsetY + this.stagePixelHeight - baseMicY * this.pixelsPerMeter;
 
     // Apply technique layout to get current mic positions
     const layoutConfig = applyTechniqueLayout(cloneMicConfig(this.micConfig));
@@ -441,15 +443,6 @@ export class StageCanvas {
   setTechnique(techniqueId) {
     this.micConfig = createMicrophoneConfig(techniqueId);
     this.micSeparation = this.micConfig.spacing;
-    this.render();
-  }
-
-  /**
-   * Toggle polar pattern visibility
-   * @param {boolean} show - Whether to show polar patterns
-   */
-  setShowPolarPatterns(show) {
-    this.showPolarPatterns = show;
     this.render();
   }
 
@@ -1315,12 +1308,10 @@ export class StageCanvas {
     ctx.restore();
 
     // Draw polar patterns first (behind mic icons)
-    if (this.showPolarPatterns) {
-      if (micL) this.drawPolarPattern(micL.x, micL.y, micL.pattern, micL.angle);
-      if (micR) this.drawPolarPattern(micR.x, micR.y, micR.pattern, micR.angle);
-      if (micC && technique?.hasCenter) {
-        this.drawPolarPattern(micC.x, micC.y, micC.pattern, micC.angle);
-      }
+    if (micL) this.drawPolarPattern(micL.x, micL.y, micL.pattern, micL.angle);
+    if (micR) this.drawPolarPattern(micR.x, micR.y, micR.pattern, micR.angle);
+    if (micC && technique?.hasCenter) {
+      this.drawPolarPattern(micC.x, micC.y, micC.pattern, micC.angle);
     }
 
     // Draw microphone icons

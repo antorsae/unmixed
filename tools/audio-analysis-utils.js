@@ -109,16 +109,36 @@ function getWindowRmsLevels(filePath, windowMs, options = {}) {
         '-'
       ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-      let stderr = '';
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const lineRegex = new RegExp(`${escapedKey}=([\\w.+-]+)`);
+      const levels = [];
+      let buffer = '';
 
       ffmpeg.stderr.on('data', (data) => {
-        stderr += data.toString();
+        buffer += data.toString();
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const match = lineRegex.exec(line);
+          if (!match) continue;
+          const value = parseDbToken(match[1], { minDb });
+          if (value === null) continue;
+          if (discardBelowMin && value <= minDb) continue;
+          levels.push(value);
+        }
       });
 
       ffmpeg.on('close', () => {
-        const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`${escapedKey}=([\\w.+-]+)`, 'g');
-        const levels = parseDbLevels(stderr, regex, { minDb, discardBelowMin });
+        if (buffer) {
+          const match = lineRegex.exec(buffer);
+          if (match) {
+            const value = parseDbToken(match[1], { minDb });
+            if (value !== null && (!discardBelowMin || value > minDb)) {
+              levels.push(value);
+            }
+          }
+        }
         resolveLevels(levels);
       });
 

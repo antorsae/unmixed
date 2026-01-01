@@ -1,140 +1,120 @@
 #!/usr/bin/env node
 /**
- * Simple Audio Level Analyzer
- * Shows why -48dB noise gate is too aggressive for Aalto recordings
+ * Simple Noise Gate Analyzer
+ * Quick p10/p90 windowed RMS summary for a directory of audio files.
  */
 
-const { execSync } = require('child_process');
-const fs = require('fs');
 const path = require('path');
+const {
+  listAudioFiles,
+  getWindowRmsLevels,
+  summarizeLevels,
+} = require('./audio-analysis-utils');
 
-const THRESHOLD_DB = -48;
+const WINDOW_MS = 100;
+const DEFAULT_THRESHOLD_DB = -74;
+const RECOMMEND_FRACTION = 0.3;
 
-function analyzeFile(filePath) {
-  const fileName = path.basename(filePath);
-
-  // Get volume stats
-  const result = execSync(
-    `ffmpeg -i "${filePath}" -af "volumedetect" -f null - 2>&1`,
-    { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
-  );
-
-  const meanMatch = result.match(/mean_volume:\s*([-\d.]+)\s*dB/);
-  const maxMatch = result.match(/max_volume:\s*([-\d.]+)\s*dB/);
-  const histMatch = result.match(/histogram_(\d+)db:\s*(\d+)/g);
-
-  const meanDb = meanMatch ? parseFloat(meanMatch[1]) : null;
-  const maxDb = maxMatch ? parseFloat(maxMatch[1]) : null;
-
-  // Parse histogram for distribution
-  const histogram = {};
-  if (histMatch) {
-    for (const h of histMatch) {
-      const m = h.match(/histogram_(\d+)db:\s*(\d+)/);
-      if (m) {
-        histogram[parseInt(m[1])] = parseInt(m[2]);
-      }
-    }
-  }
-
-  // Calculate what % is below threshold
-  let totalSamples = 0;
-  let belowThreshold = 0;
-  for (const [db, count] of Object.entries(histogram)) {
-    totalSamples += count;
-    if (-parseInt(db) < THRESHOLD_DB) {
-      belowThreshold += count;
-    }
-  }
-  const pctBelow = totalSamples > 0 ? (belowThreshold / totalSamples * 100) : null;
-
-  return { fileName, meanDb, maxDb, pctBelow, histogram };
+function recommendThreshold(p10, p90) {
+  if (!Number.isFinite(p10) || !Number.isFinite(p90)) return null;
+  return Math.round(p10 + (p90 - p10) * RECOMMEND_FRACTION);
 }
 
-function main() {
-  const directory = process.argv[2] || './temp';
+async function analyzeFile(filePath, thresholdDb) {
+  const fileName = path.basename(filePath);
+  const levels = await getWindowRmsLevels(filePath, WINDOW_MS, {
+    discardBelowMin: true,
+    fallbackToPeak: true,
+    minLevels: 10,
+  });
+
+  if (!levels.length) {
+    return { fileName, error: 'no_rms' };
+  }
+
+  const summary = summarizeLevels(levels, [0.1, 0.9]);
+  const p10 = summary.p10;
+  const p90 = summary.p90;
+  const recommended = recommendThreshold(p10, p90);
+  const below = levels.filter(level => level < thresholdDb).length;
+  const pctBelow = levels.length ? (below / levels.length) * 100 : 0;
+
+  return {
+    fileName,
+    p10,
+    p90,
+    recommended,
+    pctBelow,
+    windows: levels.length,
+  };
+}
+
+function parseArgs(args) {
+  let directory = './temp';
+  let thresholdDb = DEFAULT_THRESHOLD_DB;
+
+  for (const arg of args) {
+    if (arg.startsWith('--threshold=')) {
+      thresholdDb = parseFloat(arg.split('=')[1]);
+    } else if (!arg.startsWith('-')) {
+      directory = arg;
+    }
+  }
+
+  return { directory, thresholdDb };
+}
+
+async function main() {
+  const { directory, thresholdDb } = parseArgs(process.argv.slice(2));
+  const files = listAudioFiles(directory);
 
   console.log('='.repeat(80));
-  console.log('AALTO RECORDINGS NOISE GATE ANALYSIS');
+  console.log('SIMPLE NOISE GATE ANALYSIS');
   console.log('='.repeat(80));
-  console.log(`\nCurrent noise gate threshold: ${THRESHOLD_DB} dB`);
-  console.log('');
+  console.log(`Directory: ${directory}`);
+  console.log(`Threshold: ${thresholdDb} dB`);
+  console.log(`Window: ${WINDOW_MS} ms\n`);
 
-  const files = fs.readdirSync(directory)
-    .filter(f => f.endsWith('.mp3'))
-    .map(f => path.join(directory, f))
-    .sort();
-
-  console.log('Track                   | Mean dB | Peak dB | Problem');
-  console.log('------------------------|---------|---------|------------------------------------------');
+  if (!files.length) {
+    console.log('No audio files found.');
+    return;
+  }
 
   const results = [];
   for (const file of files) {
-    const r = analyzeFile(file);
-    results.push(r);
-
-    const name = r.fileName.replace('.mp3', '').padEnd(23).slice(0, 23);
-    const mean = r.meanDb?.toFixed(1).padStart(7) || '   N/A';
-    const max = r.maxDb?.toFixed(1).padStart(7) || '   N/A';
-
-    let problem = '';
-    if (r.meanDb && r.meanDb < THRESHOLD_DB) {
-      problem = `⚠️  MEAN is ${(THRESHOLD_DB - r.meanDb).toFixed(0)}dB below threshold!`;
-    } else if (r.meanDb) {
-      const margin = r.meanDb - THRESHOLD_DB;
-      problem = margin < 6 ? `Thin margin (${margin.toFixed(0)}dB)` : '✓ OK';
-    }
-
-    console.log(`${name} | ${mean} | ${max} | ${problem}`);
+    const result = await analyzeFile(file, thresholdDb);
+    results.push(result);
   }
 
-  // Summary
-  console.log('\n' + '='.repeat(80));
-  console.log('ROOT CAUSE ANALYSIS');
-  console.log('='.repeat(80));
+  console.log('Track                   | p10   | p90   | % < Thresh | Recommended');
+  console.log('------------------------|-------|-------|------------|------------');
 
-  const meanLevels = results.map(r => r.meanDb).filter(x => x != null);
-  const avgMean = meanLevels.reduce((a, b) => a + b, 0) / meanLevels.length;
-  const quietestMean = Math.min(...meanLevels);
-  const loudestMean = Math.max(...meanLevels);
+  for (const r of results) {
+    const name = r.fileName.replace(path.extname(r.fileName), '').padEnd(23).slice(0, 23);
+    if (r.error) {
+      console.log(`${name} |  N/A |  N/A |        N/A |        N/A`);
+      continue;
+    }
+    const p10 = r.p10?.toFixed(1).padStart(5) ?? ' N/A';
+    const p90 = r.p90?.toFixed(1).padStart(5) ?? ' N/A';
+    const pct = r.pctBelow.toFixed(1).padStart(10) + '%';
+    const rec = (r.recommended !== null ? `${r.recommended}dB` : 'N/A').padStart(10);
+    console.log(`${name} | ${p10} | ${p90} | ${pct} | ${rec}`);
+  }
 
-  console.log(`
-📊 RECORDING LEVELS:
-   - Average mean level: ${avgMean.toFixed(1)} dB
-   - Quietest track: ${quietestMean.toFixed(1)} dB (${results.find(r => r.meanDb === quietestMean)?.fileName})
-   - Loudest track: ${loudestMean.toFixed(1)} dB (${results.find(r => r.meanDb === loudestMean)?.fileName})
+  const valid = results.filter(r => !r.error);
+  if (!valid.length) return;
 
-🚨 THE PROBLEM:
-   The noise gate threshold is ${THRESHOLD_DB} dB, but the AVERAGE signal level
-   across these Aalto recordings is ${avgMean.toFixed(1)} dB!
+  const p10s = valid.map(r => r.p10).filter(Number.isFinite);
+  const p90s = valid.map(r => r.p90).filter(Number.isFinite);
+  const quietestP90 = Math.min(...p90s);
+  const highestP10 = Math.max(...p10s);
 
-   This means the gate is cutting into ACTUAL MUSIC, not just noise.
-
-   The quietest track (${results.find(r => r.meanDb === quietestMean)?.fileName})
-   has a mean level of ${quietestMean.toFixed(1)} dB - that's ${(THRESHOLD_DB - quietestMean).toFixed(0)} dB BELOW the gate threshold!
-
-💡 WHY THIS HAPPENS:
-   Aalto anechoic recordings use UNIFORM GAIN across all instruments to preserve
-   the natural loudness relationships of an orchestra. Quiet instruments like
-   violins and flutes are recorded at their natural (quiet) levels.
-
-   A typical pop/rock recording would normalize each track to ~-18 dB RMS.
-   These orchestral recordings are at their natural levels: -45 to -65 dB.
-
-🔧 RECOMMENDATIONS:
-   1. BEST: Lower threshold to ${Math.floor(quietestMean - 12)} dB or lower
-   2. GOOD: Lower threshold to ${Math.floor(avgMean - 6)} dB (6dB below average)
-   3. SAFE: Disable noise gate entirely for Aalto recordings
-
-   The Aalto recordings were made in an anechoic chamber - there's very little
-   noise to gate anyway! The main noise is from the recording equipment itself.
-`);
-
-  // Suggest specific threshold
-  const suggestedThreshold = Math.floor(quietestMean - 12);
-  console.log('='.repeat(80));
-  console.log(`SUGGESTED DEFAULT: ${suggestedThreshold} dB`);
-  console.log('='.repeat(80));
+  console.log('\nSummary:');
+  console.log(`- p10 range: ${Math.min(...p10s).toFixed(1)} to ${Math.max(...p10s).toFixed(1)} dB`);
+  console.log(`- p90 range: ${Math.min(...p90s).toFixed(1)} to ${Math.max(...p90s).toFixed(1)} dB`);
+  console.log(`- Quietest p90: ${quietestP90.toFixed(1)} dB`);
+  console.log(`- Loudest p10: ${highestP10.toFixed(1)} dB`);
 }
 
 main();

@@ -33,5 +33,5 @@ export const DEFAULT_NOISE_GATE_OPTIONS = {
   attackMs: 5,
   holdMs: 100,
   releaseMs: 80,
-  windowMs: 20,
+  windowMs: 100,
 };

@@ -11,9 +11,35 @@ const path = require('path');
 const WINDOW_MS = 50;
 const START_SECONDS = 1.0;
 const NOISE_PERCENTILE = 0.1;
-const VISUAL_NOISE_MARGIN_DB = 12;
-const VISUAL_DYNAMIC_RANGE_DB = 40;
 const MIN_DB = -120;
+
+function readVisualConstants() {
+  const defaults = {
+    VISUAL_NOISE_MARGIN_DB: 12,
+    VISUAL_DYNAMIC_RANGE_DB: 40,
+  };
+
+  try {
+    const sourcePath = path.join(__dirname, '..', 'js', 'audio-engine.js');
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    const readConst = (name, fallback) => {
+      const regex = new RegExp(`const\\s+${name}\\s*=\\s*([-.\\d]+)`);
+      const match = source.match(regex);
+      const value = match ? parseFloat(match[1]) : NaN;
+      return Number.isFinite(value) ? value : fallback;
+    };
+
+    return {
+      VISUAL_NOISE_MARGIN_DB: readConst('VISUAL_NOISE_MARGIN_DB', defaults.VISUAL_NOISE_MARGIN_DB),
+      VISUAL_DYNAMIC_RANGE_DB: readConst('VISUAL_DYNAMIC_RANGE_DB', defaults.VISUAL_DYNAMIC_RANGE_DB),
+    };
+  } catch (error) {
+    console.warn('Warning: Unable to read visual constants from audio-engine.js:', error.message);
+    return defaults;
+  }
+}
+
+const { VISUAL_NOISE_MARGIN_DB, VISUAL_DYNAMIC_RANGE_DB } = readVisualConstants();
 
 function getSampleRate(filePath) {
   const probe = execSync(

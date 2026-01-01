@@ -6,6 +6,44 @@ import { STAGE_CONFIG, MIC_CONSTANTS } from './physics-constants.js';
 
 // Speed of sound at 20°C
 const SPEED_OF_SOUND = 343;
+const layoutCache = new WeakMap();
+
+function getLayoutConfig(config) {
+  if (!config) return config;
+
+  const micSignature = Array.isArray(config.mics)
+    ? config.mics
+      .map(mic => [
+        mic.id,
+        mic.pattern,
+        mic.level,
+        mic.enabled,
+        mic.angle,
+        mic.offsetX,
+        mic.offsetY,
+      ].join(':'))
+      .join('|')
+    : '';
+
+  const signature = [
+    config.technique,
+    config.spacing,
+    config.angle,
+    config.centerDepth,
+    config.centerLevel,
+    config.micY,
+    micSignature,
+  ].join('|');
+
+  const cached = layoutCache.get(config);
+  if (cached && cached.signature === signature) {
+    return cached.layout;
+  }
+
+  const layout = applyTechniqueLayout(cloneMicConfig(config));
+  layoutCache.set(config, { signature, layout });
+  return layout;
+}
 
 /**
  * Calculate polar pattern gain for a given angle of incidence
@@ -125,18 +163,6 @@ export function calculateGroundReflectionPolarGain(patternType, sourcePos, micPo
 }
 
 /**
- * Calculate 2D distance between two points
- * @param {Object} p1 - {x, y}
- * @param {Object} p2 - {x, y}
- * @returns {number} Distance in same units as input
- */
-export function calculateDistance2D(p1, p2) {
-  const dx = p2.x - p1.x;
-  const dy = p2.y - p1.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-/**
  * Calculate 3D distance including height difference
  * @param {Object} source - {x, y} position
  * @param {Object} mic - {x, y} position
@@ -231,7 +257,7 @@ export function calculateStereoResponse(sourcePos, config, stageConfig = STAGE_C
   };
 
   // Apply technique layout to get current mic positions
-  const layoutConfig = applyTechniqueLayout(cloneMicConfig(config));
+  const layoutConfig = getLayoutConfig(config);
 
   // Base mic position (all mics relative to this)
   const micBasePos = { x: 0, y: config.micY };

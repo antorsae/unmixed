@@ -25,7 +25,6 @@ const state = {
   groundReflectionModel: 'stage',
   micSeparation: 2, // meters (legacy, now derived from micConfig)
   micConfig: createMicrophoneConfig('spaced-pair'), // Full microphone configuration
-  showPolarPatterns: true,
   noiseGateEnabled: false,
   noiseGateThreshold: DEFAULT_NOISE_GATE_OPTIONS.thresholdDb,
   isLoading: false,
@@ -431,7 +430,6 @@ function setupStageCallbacks() {
 
   // Initialize canvas with mic config from state
   stageCanvas.setMicConfig(state.micConfig);
-  stageCanvas.setShowPolarPatterns(true);
 }
 
 /**
@@ -2970,7 +2968,6 @@ async function restoreSession() {
   state.groundReflectionModel = session.groundReflectionModel ?? state.groundReflectionModel;
   state.noiseGateEnabled = session.noiseGateEnabled ?? false;
   state.noiseGateThreshold = session.noiseGateThreshold ?? DEFAULT_NOISE_GATE_OPTIONS.thresholdDb;
-  state.showPolarPatterns = true;
   // Restore mic config if available, otherwise use default
   if (session.micConfig) {
     state.micConfig = session.micConfig;
@@ -2987,7 +2984,6 @@ async function restoreSession() {
   // Update microphone controls UI
   updateMicControlsUI();
   stageCanvas.setMicConfig(state.micConfig);
-  stageCanvas.setShowPolarPatterns(true);
   if (elements.groundReflectionModel) {
     elements.groundReflectionModel.value = state.groundReflectionEnabled
       ? state.groundReflectionModel

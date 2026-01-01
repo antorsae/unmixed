@@ -236,7 +236,7 @@ function handleSingleBuffer(data) {
     attackMs = 5,
     holdMs = 100,
     releaseMs = 80,
-    windowMs = 20,
+    windowMs = 100,
   } = options;
 
   const length = channelData[0].length;
@@ -286,7 +286,7 @@ function handleMultiBuffer(data) {
     attackMs = 5,
     holdMs = 100,
     releaseMs = 80,
-    windowMs = 20,
+    windowMs = 100,
   } = options;
 
   if (!buffers || buffers.length === 0) {

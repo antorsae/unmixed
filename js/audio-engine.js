@@ -505,16 +505,6 @@ export class AudioEngine {
   }
 
   /**
-   * Calculate 3D distance including height difference
-   */
-  calculateDistance3D(source, mic, sourceHeight, micHeight) {
-    const dx = mic.x - source.x;
-    const dy = mic.y - source.y;
-    const dz = micHeight - sourceHeight;
-    return Math.sqrt(dx * dx + dy * dy + dz * dz);
-  }
-
-  /**
    * Calculate ground reflection path length
    * Sound travels down to ground, reflects, then up to mic
    */
@@ -1535,7 +1525,8 @@ export class AudioEngine {
     }
 
     // Depth-based: more reverb for instruments further back
-    return this.reverbMix * (0.5 + y * 1.0);
+    const depthScaled = this.reverbMix * (0.5 + y * 1.0);
+    return Math.max(0, Math.min(1, depthScaled));
   }
 
   /**
