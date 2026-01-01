@@ -789,6 +789,9 @@ function createTracksFromPendingFiles() {
       availableMics: originalAlternateBuffers.size > 1 ? Array.from(originalAlternateBuffers.keys()) : null,
     };
 
+    if (state.tracks.has(id)) {
+      console.warn(`Track ID collision: ${id} - overwriting existing track`);
+    }
     state.tracks.set(id, track);
   }
 

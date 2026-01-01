@@ -76,8 +76,19 @@ export class StageCanvas {
     this.setupEventListeners();
     this.resize();
 
-    // Handle window resize
-    window.addEventListener('resize', () => this.resize());
+    // Handle window resize (store reference for cleanup)
+    this.resizeHandler = () => this.resize();
+    window.addEventListener('resize', this.resizeHandler);
+  }
+
+  /**
+   * Cleanup event listeners and resources
+   */
+  destroy() {
+    window.removeEventListener('resize', this.resizeHandler);
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+    }
   }
 
   /**
@@ -160,10 +171,8 @@ export class StageCanvas {
         // Smooth transitions for each track
         for (const [id, rawLevel] of levels) {
           const current = this.trackLevels.get(id) || 0;
-          // Exponential smoothing: very fast attack, medium decay
-          const smoothed = rawLevel > current
-            ? rawLevel * 0.4 + current * 0.6  // Slower attack
-            : rawLevel * 0.4 + current * 0.6; // Medium decay (snappier)
+          // Exponential smoothing (0.4 new + 0.6 old)
+          const smoothed = rawLevel * 0.4 + current * 0.6;
           this.trackLevels.set(id, smoothed);
         }
 
@@ -199,15 +208,6 @@ export class StageCanvas {
     // gain 0 -> minRadius, gain 1 -> baseRadius, gain 2 -> maxRadius
     const t = Math.max(0, Math.min(2, gain)) / 2;
     return this.minRadius + t * (this.maxRadius - this.minRadius);
-  }
-
-  /**
-   * Calculate icon size based on gain (SIZE = VOLUME)
-   * Legacy method - use getSmartIconSize() for density-aware scaling
-   */
-  getIconSize(gain) {
-    const clampedGain = Math.max(0, Math.min(2, gain));
-    return 16 + clampedGain * clampedGain * 10;
   }
 
   /**
