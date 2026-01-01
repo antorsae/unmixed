@@ -3,6 +3,7 @@
 import { PROFILES, FAMILY_ORDER, FAMILY_COLORS } from './positions.js';
 import { parseTrackFilename, generateTrackId, sortTracksByFamily } from './track-parser.js';
 import { AudioEngine, STEREO_TECHNIQUES, POLAR_PATTERNS, createMicrophoneConfig } from './audio-engine.js';
+import { DEFAULT_XTC_CONFIG } from './xtc-config.js';
 import { StageCanvas } from './stage-canvas.js?v=4';
 import { loadZipFromUrl, loadZipFromFile, extractAudioFiles, loadAudioFiles, mightNeedCorsProxy } from './zip-loader.js?v=3';
 import { audioBufferToWav, createWavBlob, downloadBlob, generateFilename } from './wav-encoder.js';
@@ -27,6 +28,8 @@ const state = {
   micConfig: createMicrophoneConfig('spaced-pair'), // Full microphone configuration
   noiseGateEnabled: false,
   noiseGateThreshold: DEFAULT_NOISE_GATE_OPTIONS.thresholdDb,
+  xtcEnabled: false,
+  xtcConfig: { ...DEFAULT_XTC_CONFIG },
   isLoading: false,
   hasUnsavedChanges: false,
 };
@@ -139,10 +142,14 @@ async function init() {
 
   // Set initial reverb
   updateReverb();
+  // Initialize XTC (post-processing)
+  audioEngine.setXtcConfig(state.xtcConfig);
+  audioEngine.setXtcEnabled(state.xtcEnabled);
 
   // Update UI
   updateTransportUI();
   updateMicControlsUI();
+  updateXtcControlsUI();
   if (elements.groundReflectionModel) {
     elements.groundReflectionModel.value = state.groundReflectionEnabled
       ? state.groundReflectionModel
@@ -202,6 +209,21 @@ function cacheElements() {
   elements.micCenterDepthValue = document.getElementById('mic-center-depth-value');
   elements.micCenterLevel = document.getElementById('mic-center-level');
   elements.micCenterLevelValue = document.getElementById('mic-center-level-value');
+  // XTC controls (post-processing)
+  elements.xtcEnabled = document.getElementById('xtc-enabled');
+  elements.xtcSettings = document.getElementById('xtc-settings');
+  elements.xtcStrength = document.getElementById('xtc-strength');
+  elements.xtcStrengthValue = document.getElementById('xtc-strength-value');
+  elements.xtcHeadWidth = document.getElementById('xtc-head-width');
+  elements.xtcHeadWidthValue = document.getElementById('xtc-head-width-value');
+  elements.xtcAngle = document.getElementById('xtc-angle');
+  elements.xtcAngleValue = document.getElementById('xtc-angle-value');
+  elements.xtcDistance = document.getElementById('xtc-distance');
+  elements.xtcDistanceValue = document.getElementById('xtc-distance-value');
+  elements.xtcHf = document.getElementById('xtc-hf');
+  elements.xtcHfValue = document.getElementById('xtc-hf-value');
+  elements.xtcDelayValue = document.getElementById('xtc-delay-value');
+  elements.xtcGainValue = document.getElementById('xtc-gain-value');
   // Legacy (for compatibility)
   elements.micSeparation = elements.micSpacing;
   elements.micSeparationValue = elements.micSpacingValue;
@@ -274,6 +296,14 @@ function setupEventListeners() {
   elements.micAngle?.addEventListener('input', handleMicAngleChange);
   elements.micCenterDepth?.addEventListener('input', handleMicCenterDepthChange);
   elements.micCenterLevel?.addEventListener('input', handleMicCenterLevelChange);
+
+  // XTC controls
+  elements.xtcEnabled?.addEventListener('change', handleXtcToggle);
+  elements.xtcStrength?.addEventListener('input', handleXtcStrengthChange);
+  elements.xtcHeadWidth?.addEventListener('input', handleXtcHeadWidthChange);
+  elements.xtcAngle?.addEventListener('input', handleXtcAngleChange);
+  elements.xtcDistance?.addEventListener('input', handleXtcDistanceChange);
+  elements.xtcHf?.addEventListener('input', handleXtcHfChange);
 
   // Noise gate controls
   elements.noiseGateCheckbox.addEventListener('change', handleNoiseGateToggle);
@@ -1687,6 +1717,8 @@ function handleMicTechniqueChange(e) {
 
   // Sync with audio engine and canvas
   audioEngine.setMicConfig(state.micConfig);
+  state.micConfig = audioEngine.getMicConfig();
+  state.micSeparation = state.micConfig.spacing;
   stageCanvas.setMicConfig(state.micConfig);
   markUnsaved();
   maybeScheduleAutoMasterGainUpdate();
@@ -1754,6 +1786,98 @@ function handleMicCenterLevelChange(e) {
   audioEngine.setCenterLevel(level);
   markUnsaved();
   maybeScheduleAutoMasterGainUpdate();
+}
+
+function updateXtcReadout() {
+  if (!elements.xtcDelayValue || !elements.xtcGainValue || !audioEngine) return;
+  const { computed } = audioEngine.getXtcState();
+  const delayMs = computed?.delaySeconds ? computed.delaySeconds * 1000 : 0;
+  const gainDb = computed?.crossGainDb ?? -Infinity;
+  const gainText = Number.isFinite(gainDb) ? `${gainDb.toFixed(1)} dB` : '-inf dB';
+  elements.xtcDelayValue.textContent = `${delayMs.toFixed(2)} ms`;
+  elements.xtcGainValue.textContent = gainText;
+}
+
+function updateXtcControlsUI() {
+  if (!elements.xtcEnabled) return;
+  if (audioEngine) {
+    const xtcState = audioEngine.getXtcState();
+    state.xtcEnabled = xtcState.enabled;
+    state.xtcConfig = { ...state.xtcConfig, ...xtcState.config };
+  }
+  elements.xtcEnabled.checked = state.xtcEnabled;
+  if (elements.xtcSettings) {
+    elements.xtcSettings.classList.toggle('hidden', !state.xtcEnabled);
+  }
+  if (elements.xtcStrength) {
+    const strengthPct = Math.round(state.xtcConfig.strength * 100);
+    elements.xtcStrength.value = strengthPct;
+    elements.xtcStrengthValue.textContent = `${strengthPct}%`;
+  }
+  if (elements.xtcHeadWidth) {
+    elements.xtcHeadWidth.value = state.xtcConfig.headWidthCm;
+    elements.xtcHeadWidthValue.textContent = `${state.xtcConfig.headWidthCm.toFixed(0)} cm`;
+  }
+  if (elements.xtcAngle) {
+    elements.xtcAngle.value = state.xtcConfig.speakerAngleDeg;
+    elements.xtcAngleValue.textContent = `${state.xtcConfig.speakerAngleDeg.toFixed(0)}°`;
+  }
+  if (elements.xtcDistance) {
+    elements.xtcDistance.value = state.xtcConfig.speakerDistanceM;
+    elements.xtcDistanceValue.textContent = `${state.xtcConfig.speakerDistanceM.toFixed(2)} m`;
+  }
+  if (elements.xtcHf) {
+    elements.xtcHf.value = state.xtcConfig.hfCutoffHz;
+    elements.xtcHfValue.textContent = `${state.xtcConfig.hfCutoffHz.toFixed(0)} Hz`;
+  }
+  updateXtcReadout();
+}
+
+function handleXtcToggle(e) {
+  state.xtcEnabled = e.target.checked;
+  audioEngine.setXtcEnabled(state.xtcEnabled);
+  updateXtcControlsUI();
+  markUnsaved();
+}
+
+function handleXtcStrengthChange(e) {
+  const strength = Math.max(0, Math.min(1, parseFloat(e.target.value) / 100));
+  state.xtcConfig.strength = strength;
+  audioEngine.setXtcConfig(state.xtcConfig);
+  updateXtcControlsUI();
+  markUnsaved();
+}
+
+function handleXtcHeadWidthChange(e) {
+  const headWidth = parseFloat(e.target.value);
+  state.xtcConfig.headWidthCm = headWidth;
+  audioEngine.setXtcConfig(state.xtcConfig);
+  updateXtcControlsUI();
+  markUnsaved();
+}
+
+function handleXtcAngleChange(e) {
+  const angle = parseFloat(e.target.value);
+  state.xtcConfig.speakerAngleDeg = angle;
+  audioEngine.setXtcConfig(state.xtcConfig);
+  updateXtcControlsUI();
+  markUnsaved();
+}
+
+function handleXtcDistanceChange(e) {
+  const distance = parseFloat(e.target.value);
+  state.xtcConfig.speakerDistanceM = distance;
+  audioEngine.setXtcConfig(state.xtcConfig);
+  updateXtcControlsUI();
+  markUnsaved();
+}
+
+function handleXtcHfChange(e) {
+  const cutoff = parseFloat(e.target.value);
+  state.xtcConfig.hfCutoffHz = cutoff;
+  audioEngine.setXtcConfig(state.xtcConfig);
+  updateXtcControlsUI();
+  markUnsaved();
 }
 
 /**
@@ -2483,6 +2607,7 @@ function updateTransportUI() {
       ? state.groundReflectionModel
       : 'none';
   }
+  updateXtcControlsUI();
 }
 
 /**
@@ -2615,6 +2740,15 @@ function buildConfigSummary(config, isBuiltInProfile = true) {
     const modeStr = config.reverbMode ? ` (${config.reverbMode})` : '';
     const wetStr = config.reverbWetDb !== undefined ? `, ${config.reverbWetDb >= 0 ? '+' : ''}${config.reverbWetDb.toFixed(1)} dB wet` : '';
     lines.push(`<li>Reverb: ${presetName}${modeStr}${wetStr}</li>`);
+  }
+
+  // Speaker XTC
+  if (config.xtcEnabled) {
+    const xtc = { ...DEFAULT_XTC_CONFIG, ...(config.xtcConfig || {}) };
+    const strengthPct = Math.round((xtc.strength ?? 0) * 100);
+    lines.push(
+      `<li>Speaker XTC: ${strengthPct}% strength, ${xtc.speakerAngleDeg}° angle, ${xtc.speakerDistanceM}m distance, ${xtc.headWidthCm}cm head, ${xtc.hfCutoffHz}Hz HF</li>`
+    );
   }
 
   // Mic technique
@@ -2759,12 +2893,23 @@ function applySharedConfig(config) {
   }
   updateReverb();
 
+  // Apply XTC (speaker cross-talk cancellation)
+  if (config.xtcEnabled !== undefined) {
+    state.xtcEnabled = config.xtcEnabled;
+  }
+  if (config.xtcConfig) {
+    state.xtcConfig = { ...DEFAULT_XTC_CONFIG, ...config.xtcConfig };
+  }
+  audioEngine.setXtcConfig(state.xtcConfig);
+  audioEngine.setXtcEnabled(state.xtcEnabled);
+  updateXtcControlsUI();
+
   // Apply mic config
   if (config.micConfig) {
-    state.micConfig = config.micConfig;
-    state.micSeparation = config.micConfig.spacing;
     audioEngine.setMicConfig(config.micConfig);
-    stageCanvas.setMicConfig(config.micConfig);
+    state.micConfig = audioEngine.getMicConfig();
+    state.micSeparation = state.micConfig.spacing;
+    stageCanvas.setMicConfig(state.micConfig);
     updateMicControlsUI();
   }
 
@@ -2968,6 +3113,10 @@ async function restoreSession() {
   state.groundReflectionModel = session.groundReflectionModel ?? state.groundReflectionModel;
   state.noiseGateEnabled = session.noiseGateEnabled ?? false;
   state.noiseGateThreshold = session.noiseGateThreshold ?? DEFAULT_NOISE_GATE_OPTIONS.thresholdDb;
+  state.xtcEnabled = session.xtcEnabled ?? false;
+  state.xtcConfig = session.xtcConfig
+    ? { ...DEFAULT_XTC_CONFIG, ...session.xtcConfig }
+    : { ...DEFAULT_XTC_CONFIG };
   // Restore mic config if available, otherwise use default
   if (session.micConfig) {
     state.micConfig = session.micConfig;
@@ -2976,6 +3125,10 @@ async function restoreSession() {
 
   audioEngine.setMasterGain(dbToGain(state.masterGainDb));
   audioEngine.setMicConfig(state.micConfig);
+  state.micConfig = audioEngine.getMicConfig();
+  state.micSeparation = state.micConfig.spacing;
+  audioEngine.setXtcConfig(state.xtcConfig);
+  audioEngine.setXtcEnabled(state.xtcEnabled);
   audioEngine.setGroundReflection(state.groundReflectionEnabled);
   audioEngine.setGroundReflectionModel(state.groundReflectionModel);
   updateReverb();
@@ -3043,6 +3196,8 @@ function saveCurrentSession() {
     groundReflectionModel: state.groundReflectionModel,
     noiseGateEnabled: state.noiseGateEnabled,
     noiseGateThreshold: state.noiseGateThreshold,
+    xtcEnabled: state.xtcEnabled,
+    xtcConfig: state.xtcConfig,
   });
 
   saveSession(sessionState);

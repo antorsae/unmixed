@@ -21,6 +21,7 @@ import {
 } from './microphone-math.js';
 
 import { STAGE_CONFIG, AIR_ABSORPTION, MIC_CONSTANTS } from './physics-constants.js';
+import { DEFAULT_XTC_CONFIG } from './xtc-config.js';
 
 // Physical constants
 const SPEED_OF_SOUND = 343; // m/s at 20°C
@@ -53,6 +54,14 @@ function linearToDb(linear, minDb = DEFAULT_NOISE_FLOOR_DB) {
   if (!Number.isFinite(linear) || linear <= 0) return minDb;
   return Math.max(minDb, 20 * Math.log10(linear));
 }
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+const MAX_REVERB_WET = dbToLinear(6); // Match UI max (+6 dB)
+const XTC_MAX_DELAY = 0.01; // 10ms safety cap
+const XTC_RAMP_SECONDS = 0.05;
 
 const CENTER_PAN_GAIN = Math.SQRT1_2; // -3dB equal-power pan for center mic
 
@@ -96,6 +105,10 @@ export class AudioEngine {
     this.reverbMix = 0;
     this.groundReflectionEnabled = false;
     this.groundReflectionModel = DEFAULT_GROUND_REFLECTION_MODEL;
+    this.xtcEnabled = false;
+    this.xtcConfig = { ...DEFAULT_XTC_CONFIG };
+    this.xtcNodes = null;
+    this.xtcComputed = null;
 
     this.onTimeUpdate = null;
     this.onPlaybackEnd = null;
@@ -173,20 +186,198 @@ export class AudioEngine {
     // Create master output chain
     this.masterGainNode = this.context.createGain();
     this.masterGainNode.gain.value = this.masterGain;
-    this.masterGainNode.connect(this.masterLimiter);
 
     // Master analyser for output metering (tap post-master, pre-limiter)
     this.masterAnalyser = this.context.createAnalyser();
     this.masterAnalyser.fftSize = MASTER_ANALYSER_FFT_SIZE;
     this.masterAnalyser.smoothingTimeConstant = 0.3;
-    this.masterGainNode.connect(this.masterAnalyser);
     this.masterAnalyserFloatData = typeof this.masterAnalyser.getFloatTimeDomainData === 'function'
       ? new Float32Array(this.masterAnalyser.fftSize)
       : null;
     this.masterAnalyserByteData = this.masterAnalyserFloatData ? null : new Uint8Array(this.masterAnalyser.fftSize);
 
+    // Speaker XTC post-processing (playback only)
+    this.xtcNodes = this._createXtcChain();
+    this.masterGainNode.connect(this.xtcNodes.input);
+    this.xtcNodes.output.connect(this.masterLimiter);
+    this.xtcNodes.output.connect(this.masterAnalyser);
+    this._applyXtcBypass();
+
     // Create initial mix bus (A/B graph crossfade support)
     this.activeBus = this._createBus({ initialGain: 1 });
+  }
+
+  _createXtcChain() {
+    const input = this.context.createGain();
+    const splitter = this.context.createChannelSplitter(2);
+    const bypassGain = this.context.createGain();
+    const processedGain = this.context.createGain();
+    const output = this.context.createGain();
+    bypassGain.gain.value = 1;
+    processedGain.gain.value = 0;
+
+    input.connect(bypassGain);
+    input.connect(splitter);
+
+    const sumL = this.context.createGain();
+    const sumR = this.context.createGain();
+    sumL.gain.value = 1;
+    sumR.gain.value = 1;
+    splitter.connect(sumL, 0);
+    splitter.connect(sumR, 1);
+
+    const crossDelayL = this.context.createDelay(XTC_MAX_DELAY);
+    const crossDelayR = this.context.createDelay(XTC_MAX_DELAY);
+    const crossFilterL = this.context.createBiquadFilter();
+    const crossFilterR = this.context.createBiquadFilter();
+    crossFilterL.type = 'lowpass';
+    crossFilterR.type = 'lowpass';
+    crossFilterL.Q.value = 0.7;
+    crossFilterR.Q.value = 0.7;
+
+    const crossGainL = this.context.createGain();
+    const crossGainR = this.context.createGain();
+
+    splitter.connect(crossDelayL, 1);
+    crossDelayL.connect(crossFilterL);
+    crossFilterL.connect(crossGainL);
+    crossGainL.connect(sumL);
+
+    splitter.connect(crossDelayR, 0);
+    crossDelayR.connect(crossFilterR);
+    crossFilterR.connect(crossGainR);
+    crossGainR.connect(sumR);
+
+    const merger = this.context.createChannelMerger(2);
+    sumL.connect(merger, 0, 0);
+    sumR.connect(merger, 0, 1);
+    merger.connect(processedGain);
+
+    bypassGain.connect(output);
+    processedGain.connect(output);
+
+    const nodes = {
+      input,
+      output,
+      splitter,
+      bypassGain,
+      processedGain,
+      sumL,
+      sumR,
+      crossDelayL,
+      crossDelayR,
+      crossFilterL,
+      crossFilterR,
+      crossGainL,
+      crossGainR,
+    };
+
+    this._applyXtcParams(nodes, this.xtcConfig, { immediate: true });
+    return nodes;
+  }
+
+  _normalizeXtcConfig(config) {
+    return {
+      strength: clamp(config.strength ?? DEFAULT_XTC_CONFIG.strength, 0, 1),
+      headWidthCm: clamp(config.headWidthCm ?? DEFAULT_XTC_CONFIG.headWidthCm, 12, 24),
+      speakerAngleDeg: clamp(config.speakerAngleDeg ?? DEFAULT_XTC_CONFIG.speakerAngleDeg, 15, 60),
+      speakerDistanceM: clamp(config.speakerDistanceM ?? DEFAULT_XTC_CONFIG.speakerDistanceM, 0.5, 4),
+      hfCutoffHz: clamp(config.hfCutoffHz ?? DEFAULT_XTC_CONFIG.hfCutoffHz, 800, 8000),
+    };
+  }
+
+  _computeXtcModel(config) {
+    const normalized = this._normalizeXtcConfig(config);
+    const headWidthM = normalized.headWidthCm / 100;
+    const earOffset = headWidthM / 2;
+    const angleRad = (normalized.speakerAngleDeg * Math.PI) / 180;
+    const distance = normalized.speakerDistanceM;
+
+    const sin = Math.sin(angleRad);
+    const cos = Math.cos(angleRad);
+    const leftSpeaker = { x: -distance * sin, y: distance * cos };
+    const rightSpeaker = { x: distance * sin, y: distance * cos };
+    const leftEar = { x: -earOffset, y: 0 };
+    const rightEar = { x: earOffset, y: 0 };
+
+    const dist = (a, b) => {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    const ll = dist(leftSpeaker, leftEar);
+    const rr = dist(rightSpeaker, rightEar);
+    const lr = dist(leftSpeaker, rightEar);
+    const rl = dist(rightSpeaker, leftEar);
+
+    const nearDist = (ll + rr) / 2;
+    const crossDist = Math.max(nearDist + 1e-6, (lr + rl) / 2);
+    const rawGain = nearDist / crossDist;
+    const crossGain = clamp(rawGain * normalized.strength, 0, 1);
+    const delaySeconds = clamp((crossDist - nearDist) / SPEED_OF_SOUND, 0, XTC_MAX_DELAY);
+
+    return {
+      ...normalized,
+      crossGain,
+      crossGainDb: crossGain > 0 ? 20 * Math.log10(crossGain) : -Infinity,
+      delaySeconds,
+    };
+  }
+
+  _applyParam(param, value, { immediate = false } = {}) {
+    if (!param || !this.context) return;
+    const now = this.context.currentTime;
+    if (immediate) {
+      param.setValueAtTime(value, now);
+      return;
+    }
+    if (typeof param.cancelAndHoldAtTime === 'function') {
+      param.cancelAndHoldAtTime(now);
+    } else {
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(param.value, now);
+    }
+    param.setTargetAtTime(value, now, XTC_RAMP_SECONDS);
+  }
+
+  _applyXtcParams(nodes, config, { immediate = false } = {}) {
+    if (!nodes) return;
+    const computed = this._computeXtcModel(config);
+    this.xtcComputed = computed;
+
+    this._applyParam(nodes.crossDelayL.delayTime, computed.delaySeconds, { immediate });
+    this._applyParam(nodes.crossDelayR.delayTime, computed.delaySeconds, { immediate });
+    this._applyParam(nodes.crossGainL.gain, -computed.crossGain, { immediate });
+    this._applyParam(nodes.crossGainR.gain, -computed.crossGain, { immediate });
+    this._applyParam(nodes.crossFilterL.frequency, computed.hfCutoffHz, { immediate });
+    this._applyParam(nodes.crossFilterR.frequency, computed.hfCutoffHz, { immediate });
+  }
+
+  _applyXtcBypass({ immediate = false } = {}) {
+    if (!this.xtcNodes) return;
+    const targetWet = this.xtcEnabled ? 1 : 0;
+    const targetDry = this.xtcEnabled ? 0 : 1;
+    this._applyParam(this.xtcNodes.processedGain.gain, targetWet, { immediate });
+    this._applyParam(this.xtcNodes.bypassGain.gain, targetDry, { immediate });
+  }
+
+  setXtcEnabled(enabled) {
+    this.xtcEnabled = !!enabled;
+    this._applyXtcBypass();
+  }
+
+  setXtcConfig(config) {
+    this.xtcConfig = this._normalizeXtcConfig({ ...this.xtcConfig, ...config });
+    this._applyXtcParams(this.xtcNodes, this.xtcConfig);
+  }
+
+  getXtcState() {
+    return {
+      enabled: this.xtcEnabled,
+      config: { ...this.xtcConfig },
+      computed: this.xtcComputed ?? this._computeXtcModel(this.xtcConfig),
+    };
   }
 
   /**
@@ -1052,7 +1243,7 @@ export class AudioEngine {
    * Get current microphone configuration
    */
   getMicConfig() {
-    return { ...this.micConfig };
+    return cloneMicConfig(this.micConfig);
   }
 
   /**
@@ -1488,7 +1679,7 @@ export class AudioEngine {
    * Set global reverb wet amount (scales preset wet)
    */
   setReverbWet(wet) {
-    this.reverbWet = Math.max(0, Math.min(1, wet));
+    this.reverbWet = Math.max(0, Math.min(MAX_REVERB_WET, wet));
     this.reverbMix = this.reverbPresetWet * this.reverbWet;
     this.updateReverbSendLevels();
   }
