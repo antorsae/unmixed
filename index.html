@@ -9,6 +9,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <!-- MP3 encoding -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+  <!-- URL compression for sharing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -55,18 +57,24 @@
           <span>OR</span>
         </div>
 
-        <button id="upload-zip-btn" class="btn secondary">Upload ZIP</button>
-        <input type="file" id="zip-input" accept=".zip" class="hidden">
-
-        <div class="divider">
-          <span>OR</span>
+        <div class="upload-row">
+          <div class="upload-zip-col">
+            <button id="upload-zip-btn" class="btn secondary">Upload ZIP</button>
+            <input type="file" id="zip-input" accept=".zip" class="hidden">
+          </div>
+          <div class="upload-files-col" id="drop-zone">
+            <button id="browse-files-btn" class="btn secondary">Browse Files</button>
+            <p class="hint">MP3, WAV, FLAC, OGG, AAC</p>
+            <input type="file" id="files-input" multiple accept="audio/*" class="hidden">
+          </div>
         </div>
 
-        <div id="drop-zone">
-          <p>Drop audio files here</p>
-          <p class="hint">MP3, WAV, FLAC, OGG, AAC</p>
-          <input type="file" id="files-input" multiple accept="audio/*" class="hidden">
-          <button id="browse-files-btn" class="btn secondary">Browse Files</button>
+        <div class="divider">
+          <span>COMMUNITY</span>
+        </div>
+
+        <div class="community-section">
+          <button id="share-btn" class="btn secondary" disabled>🔗 Share your arrangement</button>
         </div>
       </aside>
 
@@ -283,6 +291,6 @@
     </footer>
   </div>
 
-  <script type="module" src="js/app.js?v=17"></script>
+  <script type="module" src="js/app.js?v=19"></script>
 </body>
 </html>

@@ -126,8 +126,12 @@ async function init() {
   // Set up unsaved changes warning
   setupUnloadWarning(() => state.hasUnsavedChanges);
 
-  // Check for saved session
-  if (hasSession()) {
+  // Check for shared config in URL (takes priority over saved session)
+  const hasSharedURL = location.hash.startsWith('#c=');
+  if (hasSharedURL) {
+    await loadFromURL();
+  } else if (hasSession()) {
+    // Only show restore modal if no shared URL
     showRestoreModal();
   }
 
@@ -201,6 +205,7 @@ function cacheElements() {
   elements.micSeparationValue = elements.micSpacingValue;
   elements.resetPositionsBtn = document.getElementById('reset-positions-btn');
   elements.resetAllBtn = document.getElementById('reset-all-btn');
+  elements.shareBtn = document.getElementById('share-btn');
   elements.downloadWavBtn = document.getElementById('download-wav-btn');
   elements.downloadMp3Btn = document.getElementById('download-mp3-btn');
   elements.toastContainer = document.getElementById('toast-container');
@@ -275,7 +280,8 @@ function setupEventListeners() {
   elements.resetPositionsBtn.addEventListener('click', resetPositions);
   elements.resetAllBtn.addEventListener('click', resetAll);
 
-  // Download buttons
+  // Share and download buttons
+  elements.shareBtn?.addEventListener('click', shareConfig);
   elements.downloadWavBtn.addEventListener('click', downloadWav);
   elements.downloadMp3Btn.addEventListener('click', downloadMp3);
   elements.cancelRenderBtn.addEventListener('click', cancelRender);
@@ -967,6 +973,7 @@ function clearTracks() {
   state.tracks.clear();
   elements.trackList.innerHTML = '';
   disableExportButtons();
+  updateShareButtonState();
   if (autoGainTimer) {
     clearTimeout(autoGainTimer);
     autoGainTimer = null;
@@ -2450,6 +2457,163 @@ function updateTransportUI() {
 }
 
 /**
+ * Generate a shareable URL with compressed config
+ */
+function getShareableURL() {
+  const config = createSessionState(state);
+  const json = JSON.stringify(config);
+  const compressed = pako.deflate(json);
+  const base64 = btoa(String.fromCharCode(...compressed))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, ''); // URL-safe base64
+  return `${location.origin}${location.pathname}#c=${base64}`;
+}
+
+/**
+ * Load config from URL hash
+ */
+async function loadFromURL() {
+  const hash = location.hash;
+  if (!hash.startsWith('#c=')) return false;
+
+  try {
+    // Decode URL-safe base64
+    let base64 = hash.slice(3)
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+    // Add padding if needed
+    while (base64.length % 4) base64 += '=';
+
+    const compressed = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    const json = pako.inflate(compressed, { to: 'string' });
+    const config = JSON.parse(json);
+
+    // Auto-load the profile if specified
+    if (config.profile && !state.tracks.size) {
+      const profileRadio = document.querySelector(`input[name="profile"][value="${config.profile}"]`);
+      if (profileRadio) {
+        profileRadio.checked = true;
+        // Load the profile and apply config after
+        await loadProfile();
+        applySharedConfig(config);
+        showToast('Loaded shared configuration', 'success');
+        // Clear hash to avoid re-loading on refresh
+        history.replaceState(null, '', location.pathname);
+        return true;
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load config from URL:', error);
+    showToast('Failed to load shared configuration', 'error');
+  }
+  return false;
+}
+
+/**
+ * Apply shared config to current state
+ */
+function applySharedConfig(config) {
+  // Apply track settings
+  if (config.tracks) {
+    for (const [id, track] of state.tracks) {
+      const saved = config.tracks[track.filename];
+      if (saved) {
+        track.x = saved.x ?? track.x;
+        track.y = saved.y ?? track.y;
+        track.gain = saved.gain ?? track.gain;
+        track.muted = saved.muted ?? track.muted;
+        track.solo = saved.solo ?? track.solo;
+      }
+    }
+  }
+
+  // Apply master settings
+  if (config.masterGainDb !== undefined) {
+    state.masterGainDb = config.masterGainDb;
+    elements.masterGain.value = config.masterGainDb;
+    audioEngine.setMasterGain(Math.pow(10, config.masterGainDb / 20));
+  }
+  if (config.masterGainAuto !== undefined) {
+    state.masterGainAuto = config.masterGainAuto;
+    if (elements.masterAuto) elements.masterAuto.checked = config.masterGainAuto;
+  }
+
+  // Apply reverb settings
+  if (config.reverbPreset) {
+    state.reverbPreset = config.reverbPreset;
+    elements.reverbPreset.value = config.reverbPreset;
+  }
+  if (config.reverbMode) {
+    state.reverbMode = config.reverbMode;
+    if (elements.reverbMode) {
+      elements.reverbMode.value = config.reverbMode;
+      elements.reverbMode.disabled = (config.reverbPreset === 'none');
+    }
+  }
+  if (config.reverbWetDb !== undefined) {
+    state.reverbWetDb = config.reverbWetDb;
+    elements.reverbWet.value = config.reverbWetDb;
+    elements.reverbWetValue.textContent = formatDb(config.reverbWetDb);
+  }
+  updateReverb();
+
+  // Apply mic config
+  if (config.micConfig) {
+    state.micConfig = config.micConfig;
+    state.micSeparation = config.micConfig.spacing;
+    audioEngine.setMicConfig(config.micConfig);
+    stageCanvas.setMicConfig(config.micConfig);
+    updateMicControlsUI();
+  }
+
+  // Apply ground reflection
+  if (config.groundReflectionModel) {
+    state.groundReflectionModel = config.groundReflectionModel;
+    state.groundReflectionEnabled = config.groundReflectionModel !== 'none';
+    if (elements.groundReflectionModel) {
+      elements.groundReflectionModel.value = config.groundReflectionModel;
+    }
+    audioEngine.setGroundReflectionModel(
+      state.groundReflectionEnabled ? config.groundReflectionModel : null
+    );
+  }
+
+  // Apply noise gate
+  if (config.noiseGateEnabled !== undefined) {
+    state.noiseGateEnabled = config.noiseGateEnabled;
+    elements.noiseGateCheckbox.checked = config.noiseGateEnabled;
+  }
+  if (config.noiseGateThreshold !== undefined) {
+    state.noiseGateThreshold = config.noiseGateThreshold;
+    elements.noiseGateThreshold.value = config.noiseGateThreshold;
+    elements.noiseGateThresholdValue.textContent = `${config.noiseGateThreshold}dB`;
+  }
+
+  // Rebuild audio graph and update UI
+  audioEngine.rebuildGraph();
+  stageCanvas.setTracks(state.tracks);
+  renderTrackList();
+  updateMasterGainDisplay();
+
+  // Mark as having changes (enables share button)
+  markUnsaved();
+}
+
+/**
+ * Share current config via URL
+ */
+function shareConfig() {
+  const url = getShareableURL();
+  navigator.clipboard.writeText(url).then(() => {
+    showToast('Share URL copied to clipboard!', 'success');
+  }).catch(() => {
+    // Fallback: show URL in prompt
+    prompt('Copy this URL to share your configuration:', url);
+  });
+}
+
+/**
  * Download WAV
  */
 async function downloadWav() {
@@ -2691,6 +2855,7 @@ function saveCurrentSession() {
  */
 function markUnsaved() {
   state.hasUnsavedChanges = true;
+  updateShareButtonState();
 
   // Auto-save after a delay (use pre-created debounced function)
   if (debouncedSaveSession) {
@@ -2733,6 +2898,15 @@ function enableExportButtons() {
 function disableExportButtons() {
   elements.downloadWavBtn.disabled = true;
   elements.downloadMp3Btn.disabled = true;
+}
+
+/**
+ * Update share button state - enabled only when there are changes vs defaults
+ */
+function updateShareButtonState() {
+  if (!elements.shareBtn) return;
+  // Enable if tracks loaded AND there are unsaved changes
+  elements.shareBtn.disabled = !(state.tracks.size > 0 && state.hasUnsavedChanges);
 }
 
 /**

@@ -293,17 +293,33 @@ button.primary:hover {
   display: none;
 }
 
+/* Upload Row - side by side */
+.upload-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.upload-zip-col {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.upload-files-col {
+  flex: 1;
+}
+
 /* Drop Zone */
 #drop-zone {
   border: 1px dashed var(--panel-border);
   border-radius: 12px;
-  padding: 20px;
+  padding: 12px;
   text-align: center;
   font-size: 13px;
   color: var(--ink-soft);
   background: #fff7ed;
   transition: border-color 0.2s, background 0.2s;
-  margin-bottom: 12px;
 }
 
 #drop-zone.drag-over {
@@ -317,8 +333,34 @@ button.primary:hover {
 
 #drop-zone .hint {
   font-size: 11px;
-  margin-bottom: 14px;
+  margin-top: 6px;
+  margin-bottom: 0;
   color: var(--ink-soft);
+}
+
+/* Community Section */
+.community-section {
+  text-align: center;
+}
+
+.community-section #share-btn {
+  width: 100%;
+  font-size: 14px;
+  padding: 10px 16px;
+}
+
+.top-mixes {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--bg-strong);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.top-mixes .hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-style: italic;
 }
 
 /* Status */
