@@ -312,6 +312,22 @@ export function createConfigFromPreset(presetId) {
 }
 
 /**
+ * Create a defensive copy of a mic configuration
+ * @param {Object} config - Microphone configuration
+ * @returns {Object} Cloned configuration
+ */
+export function cloneMicConfig(config) {
+  if (!config) return config;
+
+  return {
+    ...config,
+    mics: Array.isArray(config.mics)
+      ? config.mics.map(mic => ({ ...mic }))
+      : [],
+  };
+}
+
+/**
  * Apply technique-specific adjustments to mic offsets
  * Call this after changing spacing/angle parameters
  * @param {Object} config - Microphone configuration

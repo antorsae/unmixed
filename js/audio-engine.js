@@ -5,6 +5,7 @@
 import {
   createMicrophoneConfig,
   createConfigFromPreset,
+  cloneMicConfig,
   applyTechniqueLayout,
   validateConfig,
   STEREO_TECHNIQUES,
@@ -101,6 +102,8 @@ export class AudioEngine {
 
     this.trackNodes = new Map(); // trackId -> { sourceL, sourceR, ... }
     this.tracks = new Map(); // trackId -> track data
+    this.soloCount = 0;
+    this.hasSolo = false;
 
     this.isPlaying = false;
     this.startTime = 0;
@@ -142,7 +145,7 @@ export class AudioEngine {
    * Also stores mic pattern and angle for ground reflection calculations
    */
   _updateLegacyMicPositions() {
-    const layoutConfig = applyTechniqueLayout({ ...this.micConfig });
+    const layoutConfig = applyTechniqueLayout(cloneMicConfig(this.micConfig));
     const baseY = this.micConfig.micY;
 
     // Find L, R, and C mics
@@ -614,6 +617,10 @@ export class AudioEngine {
     }
 
     this.tracks.set(id, track);
+    if (track.solo) {
+      this.soloCount += 1;
+      this.hasSolo = this.soloCount > 0;
+    }
 
     if (buffer.duration > this.duration) {
       this.duration = buffer.duration;
@@ -624,6 +631,11 @@ export class AudioEngine {
    * Remove a track
    */
   removeTrack(id) {
+    const track = this.tracks.get(id);
+    if (track?.solo) {
+      this.soloCount = Math.max(0, this.soloCount - 1);
+      this.hasSolo = this.soloCount > 0;
+    }
     this.disconnectTrack(id, this.trackNodes);
     this.disconnectTrack(id, this.pendingTrackNodes);
     this.tracks.delete(id);
@@ -639,6 +651,8 @@ export class AudioEngine {
       this.disconnectTrack(id);
     }
     this.tracks.clear();
+    this.soloCount = 0;
+    this.hasSolo = false;
     this.duration = 0;
   }
 
@@ -970,9 +984,9 @@ export class AudioEngine {
   _updateAllTracks() {
     const nodeMaps = [this.trackNodes, this.pendingTrackNodes].filter(Boolean);
     for (const nodeMap of nodeMaps) {
-      for (const [id, track] of this.tracks) {
-        const nodes = nodeMap.get(id);
-        if (nodes) {
+      for (const [id, nodes] of nodeMap.entries()) {
+        const track = this.tracks.get(id);
+        if (track) {
           this.updateTrackAudioParams(id, track, nodes);
         }
       }
@@ -1052,7 +1066,7 @@ export class AudioEngine {
     const effectiveDistC = responseC?.distance || 3;
 
     // Apply track gain and mute/solo
-    const hasSolo = Array.from(this.tracks.values()).some(t => t.solo);
+    const hasSolo = this.hasSolo;
     let gainMultiplier = track.gain;
     if (track.muted || (hasSolo && !track.solo)) {
       gainMultiplier = 0;
@@ -1359,18 +1373,17 @@ export class AudioEngine {
     const track = this.tracks.get(id);
     if (!track) return;
 
+    const wasSolo = track.solo;
     track.solo = solo;
 
-    // Update all tracks since solo affects others
-    const nodeMaps = [this.trackNodes, this.pendingTrackNodes].filter(Boolean);
-    for (const nodeMap of nodeMaps) {
-      for (const [trackId, trackData] of this.tracks) {
-        const nodes = nodeMap.get(trackId);
-        if (nodes) {
-          this.updateTrackAudioParams(trackId, trackData, nodes);
-        }
-      }
+    if (wasSolo !== solo) {
+      this.soloCount += solo ? 1 : -1;
+      this.soloCount = Math.max(0, this.soloCount);
+      this.hasSolo = this.soloCount > 0;
     }
+
+    // Update all tracks since solo affects others
+    this._updateAllTracks();
   }
 
   /**
@@ -1527,8 +1540,14 @@ export class AudioEngine {
     const hasCenter = technique?.hasCenter;
 
     // Clamp offset to buffer duration to prevent WebAudio errors
-    const bufferToUse = hasDirectivity ? track.frontBuffer : track.buffer;
-    const maxOffset = bufferToUse ? bufferToUse.duration : 0;
+    let maxOffset = 0;
+    if (hasDirectivity) {
+      const frontDuration = track.frontBuffer ? track.frontBuffer.duration : 0;
+      const bellDuration = track.bellBuffer ? track.bellBuffer.duration : frontDuration;
+      maxOffset = Math.min(frontDuration, bellDuration);
+    } else {
+      maxOffset = track.buffer ? track.buffer.duration : 0;
+    }
     offset = Math.min(Math.max(0, offset), maxOffset);
 
     // === SOURCE NODES ===
@@ -2176,7 +2195,7 @@ export class AudioEngine {
       reverbConvolver.connect(reverbGain);
     }
 
-    const hasSolo = Array.from(this.tracks.values()).some(t => t.solo);
+    const hasSolo = this.hasSolo;
     const technique = STEREO_TECHNIQUES[this.micConfig.technique];
     const hasCenter = technique?.hasCenter;
     const groundModel = this.groundReflectionEnabled ? this.getGroundReflectionModelConfig() : null;

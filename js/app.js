@@ -1037,38 +1037,86 @@ function createTrackListItem(track) {
     track.availableMics.includes('6') &&
     track.availableMics.includes('8');
 
-  el.innerHTML = `
-    <input type="checkbox" class="track-mute" ${track.muted ? '' : 'checked'} title="Enable/Disable">
-    <span class="track-name" style="color: ${FAMILY_COLORS[track.family]}">${track.name}</span>
-    ${hasDirectivity ? '<span class="directivity-badge" title="Directivity simulation active (blends front/bell mics based on position)">DIR</span>' : ''}
-    <div class="track-controls">
-      <div class="track-control">
-        <label>X:</label>
-        <input type="range" class="track-x-slider" min="-1" max="1" step="0.01" value="${track.x}">
-        <input type="text" class="value-input track-x-value" value="${track.x.toFixed(2)}">
-      </div>
-      <div class="track-control">
-        <label>Y:</label>
-        <input type="range" class="track-y-slider" min="0" max="1" step="0.01" value="${track.y}">
-        <input type="text" class="value-input track-y-value" value="${track.y.toFixed(2)}">
-      </div>
-      <div class="track-control">
-        <label>Gain:</label>
-        <input type="range" class="track-gain-slider" min="0" max="2" step="0.01" value="${track.gain}">
-      </div>
-      <button class="track-solo ${track.solo ? 'active' : ''}">S</button>
-    </div>
-  `;
+  const muteCheckbox = document.createElement('input');
+  muteCheckbox.type = 'checkbox';
+  muteCheckbox.className = 'track-mute';
+  muteCheckbox.checked = !track.muted;
+  muteCheckbox.title = 'Enable/Disable';
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'track-name';
+  nameSpan.style.color = FAMILY_COLORS[track.family];
+  nameSpan.textContent = track.name;
+
+  el.appendChild(muteCheckbox);
+  el.appendChild(nameSpan);
+
+  if (hasDirectivity) {
+    const badge = document.createElement('span');
+    badge.className = 'directivity-badge';
+    badge.title = 'Directivity simulation active (blends front/bell mics based on position)';
+    badge.textContent = 'DIR';
+    el.appendChild(badge);
+  }
+
+  const controls = document.createElement('div');
+  controls.className = 'track-controls';
+
+  const xControl = document.createElement('div');
+  xControl.className = 'track-control';
+  const xLabel = document.createElement('label');
+  xLabel.textContent = 'X:';
+  const xSlider = document.createElement('input');
+  xSlider.type = 'range';
+  xSlider.className = 'track-x-slider';
+  xSlider.min = '-1';
+  xSlider.max = '1';
+  xSlider.step = '0.01';
+  xSlider.value = track.x;
+  const xValue = document.createElement('input');
+  xValue.type = 'text';
+  xValue.className = 'value-input track-x-value';
+  xValue.value = track.x.toFixed(2);
+  xControl.append(xLabel, xSlider, xValue);
+
+  const yControl = document.createElement('div');
+  yControl.className = 'track-control';
+  const yLabel = document.createElement('label');
+  yLabel.textContent = 'Y:';
+  const ySlider = document.createElement('input');
+  ySlider.type = 'range';
+  ySlider.className = 'track-y-slider';
+  ySlider.min = '0';
+  ySlider.max = '1';
+  ySlider.step = '0.01';
+  ySlider.value = track.y;
+  const yValue = document.createElement('input');
+  yValue.type = 'text';
+  yValue.className = 'value-input track-y-value';
+  yValue.value = track.y.toFixed(2);
+  yControl.append(yLabel, ySlider, yValue);
+
+  const gainControl = document.createElement('div');
+  gainControl.className = 'track-control';
+  const gainLabel = document.createElement('label');
+  gainLabel.textContent = 'Gain:';
+  const gainSlider = document.createElement('input');
+  gainSlider.type = 'range';
+  gainSlider.className = 'track-gain-slider';
+  gainSlider.min = '0';
+  gainSlider.max = '2';
+  gainSlider.step = '0.01';
+  gainSlider.value = track.gain;
+  gainControl.append(gainLabel, gainSlider);
+
+  const soloBtn = document.createElement('button');
+  soloBtn.className = `track-solo ${track.solo ? 'active' : ''}`;
+  soloBtn.textContent = 'S';
+
+  controls.append(xControl, yControl, gainControl, soloBtn);
+  el.appendChild(controls);
 
   // Event listeners
-  const muteCheckbox = el.querySelector('.track-mute');
-  const xSlider = el.querySelector('.track-x-slider');
-  const ySlider = el.querySelector('.track-y-slider');
-  const xValue = el.querySelector('.track-x-value');
-  const yValue = el.querySelector('.track-y-value');
-  const gainSlider = el.querySelector('.track-gain-slider');
-  const soloBtn = el.querySelector('.track-solo');
-
   muteCheckbox.addEventListener('change', () => {
     track.muted = !muteCheckbox.checked;
     audioEngine.updateTrackMuted(track.id, track.muted);
@@ -2001,9 +2049,10 @@ function computeNoiseFloorDb(audioBuffer, options = {}) {
   const maxWindows = options.maxWindows ?? NOISE_FLOOR_ANALYSIS.maxWindows;
   const minDb = options.minDb ?? NOISE_FLOOR_ANALYSIS.minDb;
 
-  const channel = audioBuffer.getChannelData(0);
+  const left = audioBuffer.getChannelData(0);
+  const right = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : null;
   const windowSamples = Math.max(1, Math.floor(audioBuffer.sampleRate * windowMs / 1000));
-  const totalWindows = Math.floor(channel.length / windowSamples);
+  const totalWindows = Math.floor(left.length / windowSamples);
 
   if (totalWindows === 0) return minDb;
 
@@ -2012,11 +2061,16 @@ function computeNoiseFloorDb(audioBuffer, options = {}) {
 
   for (let w = 0; w < totalWindows; w += stride) {
     const start = w * windowSamples;
-    const end = Math.min(start + windowSamples, channel.length);
+    const end = Math.min(start + windowSamples, left.length);
     let sumSquares = 0;
     for (let i = start; i < end; i++) {
-      const v = channel[i];
-      sumSquares += v * v;
+      const l = left[i];
+      if (right) {
+        const r = right[i];
+        sumSquares += 0.5 * (l * l + r * r);
+      } else {
+        sumSquares += l * l;
+      }
     }
     const length = end - start;
     if (length === 0) continue;
@@ -2034,8 +2088,6 @@ function computeNoiseFloorDb(audioBuffer, options = {}) {
 
 async function computeNoiseFloorsForTracks() {
   const trackIds = Array.from(state.tracks.keys());
-  const deferRebuild = audioEngine.isPlaying;
-  let needsRebuild = false;
   if (!trackIds.length) return;
 
   setStatus('Analyzing noise floors...', 'info');

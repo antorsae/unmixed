@@ -7,10 +7,12 @@ import {
   STEREO_TECHNIQUES,
   POLAR_PATTERNS,
   applyTechniqueLayout,
+  cloneMicConfig,
   createMicrophoneConfig,
 } from './microphone-types.js';
 import { getPolarPatternPoints } from './microphone-math.js';
 import { getIconInfo, drawInstrumentIcon, getShapeBounds } from './instrument-icons.js';
+import { STAGE_CONFIG } from './audio-engine.js';
 
 export class StageCanvas {
   constructor(canvas) {
@@ -50,6 +52,7 @@ export class StageCanvas {
     this.animationEnabled = true;
     this.animationFrameId = null;
     this.trackLevels = new Map();  // trackId -> smoothed level (0..1)
+    this.minDistancePixels = Infinity;
 
     // Callbacks
     this.onTrackMove = null;
@@ -110,20 +113,19 @@ export class StageCanvas {
     this.height = rect.height;
 
     // Calculate uniform scaling to maintain proper aspect ratio
-    // Stage is 20m wide (X: -10m to +10m), 15m deep (Y: 0 to 15m)
-    // We need same pixels-per-meter for both axes so 1m x 1m is always square
+    // Stage uses the shared config dimensions so 1m x 1m is always square
     const availableWidth = this.width - this.padding * 2;
     const availableHeight = this.height - this.padding * 2 - 30; // 30px for title area
 
-    const pixelsPerMeterX = availableWidth / 20;  // If stage filled width
-    const pixelsPerMeterY = availableHeight / 15; // If stage filled height
+    const pixelsPerMeterX = availableWidth / STAGE_CONFIG.width;
+    const pixelsPerMeterY = availableHeight / STAGE_CONFIG.depth;
 
     // Use smaller scale to fit stage in available space
     this.pixelsPerMeter = Math.min(pixelsPerMeterX, pixelsPerMeterY);
 
     // Calculate actual stage dimensions in pixels (with uniform scale)
-    this.stagePixelWidth = this.pixelsPerMeter * 20;
-    this.stagePixelHeight = this.pixelsPerMeter * 15;
+    this.stagePixelWidth = this.pixelsPerMeter * STAGE_CONFIG.width;
+    this.stagePixelHeight = this.pixelsPerMeter * STAGE_CONFIG.depth;
 
     // Center the stage in the available space
     this.stageOffsetX = this.padding + (availableWidth - this.stagePixelWidth) / 2;
@@ -215,7 +217,7 @@ export class StageCanvas {
    * @param {Object} track - Track object with gain property
    * @returns {number} Icon size in pixels
    */
-  getSmartIconSize(track) {
+  getSmartIconSize(track, minDistancePixels = this.minDistancePixels) {
     const trackCount = this.tracks.size;
 
     // Base size by density (bigger when fewer tracks)
@@ -236,21 +238,18 @@ export class StageCanvas {
     const gainMod = 0.8 + clampedGain * 0.2;
 
     // Check for overlaps and shrink if needed
-    const overlapFactor = this.computeOverlapFactor(baseSize * gainMod);
+    const overlapFactor = this.computeOverlapFactor(baseSize * gainMod, minDistancePixels);
 
     return baseSize * gainMod * overlapFactor;
   }
 
   /**
-   * Compute global shrink factor to prevent icon overlaps
-   * Uses minimum distance between any pair of tracks
-   * @param {number} proposedSize - Size before overlap adjustment
-   * @returns {number} Factor 0.5 to 1.0 (1.0 = no shrink needed)
+   * Compute minimum pixel distance between any two tracks
+   * @returns {number} Minimum distance in pixels or Infinity if < 2 tracks
    */
-  computeOverlapFactor(proposedSize) {
-    if (this.tracks.size < 2) return 1.0;
+  computeMinDistancePixels() {
+    if (this.tracks.size < 2) return Infinity;
 
-    // Find minimum canvas distance between any two tracks
     let minDistancePixels = Infinity;
     const trackArray = Array.from(this.tracks.values());
 
@@ -262,6 +261,19 @@ export class StageCanvas {
         minDistancePixels = Math.min(minDistancePixels, dist);
       }
     }
+
+    return minDistancePixels;
+  }
+
+  /**
+   * Compute global shrink factor to prevent icon overlaps
+   * Uses minimum distance between any pair of tracks
+   * @param {number} proposedSize - Size before overlap adjustment
+   * @param {number} minDistancePixels - Cached minimum distance between tracks
+   * @returns {number} Factor 0.5 to 1.0 (1.0 = no shrink needed)
+   */
+  computeOverlapFactor(proposedSize, minDistancePixels = this.minDistancePixels) {
+    if (!Number.isFinite(minDistancePixels)) return 1.0;
 
     // Icons overlap if distance < 2 * iconRadius (with some padding)
     // We want icons to have at least 4px gap between them
@@ -282,8 +294,8 @@ export class StageCanvas {
    */
   trackToCanvas(x, y) {
     // Convert normalized (-1..1 X, 0..1 Y) to stage meters
-    const metersX = x * 10;  // -1..1 → -10..10
-    const metersY = y * 15;  // 0..1 → 0..15 (0 = front, 1 = back)
+    const metersX = x * (STAGE_CONFIG.width / 2);
+    const metersY = y * STAGE_CONFIG.depth;
 
     // Convert to pixels using uniform scale, centered in available space
     const canvasX = this.stageOffsetX + (this.stagePixelWidth / 2) + metersX * this.pixelsPerMeter;
@@ -303,8 +315,8 @@ export class StageCanvas {
     const metersY = (this.stageOffsetY + this.stagePixelHeight - canvasY) / this.pixelsPerMeter;
 
     // Convert meters to normalized coordinates
-    let x = metersX / 10;  // -10..10 → -1..1
-    let y = metersY / 15;  // 0..15 → 0..1
+    let x = metersX / (STAGE_CONFIG.width / 2);
+    let y = metersY / STAGE_CONFIG.depth;
 
     // Clamp to stage bounds
     x = Math.max(-1, Math.min(1, x));
@@ -322,18 +334,17 @@ export class StageCanvas {
   constrainMinDistanceFromMics(pos, minDist = 0.5) {
     if (!this.micConfig) return pos;
 
-    // Stage dimensions (must match STAGE_CONFIG in audio-engine.js)
-    const stageWidth = 20;  // -10m to +10m
-    const stageDepth = 15;  // 0 to 15m
-    const sourceHeight = 1.2;
-    const micHeight = 1.5;
+    const stageWidth = STAGE_CONFIG.width;
+    const stageDepth = STAGE_CONFIG.depth;
+    const sourceHeight = STAGE_CONFIG.sourceHeight;
+    const micHeight = STAGE_CONFIG.micHeight;
     const heightDiff = Math.abs(micHeight - sourceHeight);
 
     // Convert normalized position to meters
     let sourceX = pos.x * (stageWidth / 2);
     let sourceY = pos.y * stageDepth;
 
-    const layoutConfig = applyTechniqueLayout({ ...this.micConfig });
+    const layoutConfig = applyTechniqueLayout(cloneMicConfig(this.micConfig));
     const micBaseY = this.micConfig.micY || -1;
 
     // Check distance to each mic and push away if too close
@@ -379,7 +390,7 @@ export class StageCanvas {
     const micY = this.stageOffsetY + this.stagePixelHeight + 20; // Below the stage
 
     // Apply technique layout to get current mic positions
-    const layoutConfig = applyTechniqueLayout({ ...this.micConfig });
+    const layoutConfig = applyTechniqueLayout(cloneMicConfig(this.micConfig));
     const technique = STEREO_TECHNIQUES[this.micConfig.technique];
 
     const result = {};
@@ -544,11 +555,16 @@ export class StageCanvas {
    */
   findTrackAt(canvasX, canvasY) {
     const trackIds = Array.from(this.tracks.keys()).reverse();
+    let minDistancePixels = this.minDistancePixels;
+    if (!Number.isFinite(minDistancePixels)) {
+      minDistancePixels = this.computeMinDistancePixels();
+      this.minDistancePixels = minDistancePixels;
+    }
 
     for (const id of trackIds) {
       const track = this.tracks.get(id);
       const pos = this.trackToCanvas(track.x, track.y);
-      const iconSize = this.getSmartIconSize(track);
+      const iconSize = this.getSmartIconSize(track, minDistancePixels);
 
       // Get shape bounds for hit testing
       const iconInfo = track.iconInfo || getIconInfo(track.name, track.family);
@@ -560,16 +576,13 @@ export class StageCanvas {
       const dy = canvasY - pos.y;
 
       // Check M/S icon positions (badges at bottom of icon)
-      const badgeY = pos.y + halfH - 4;
-      const muteIconX = pos.x - 10;
-      const muteIconY = badgeY;
-      const soloIconX = pos.x + 10;
-      const soloIconY = badgeY;
+      const badgeY = pos.y + halfH + 2;
+      const muteIconX = pos.x - 12;
+      const soloIconX = pos.x + 12;
+      const badgeRadius = this.iconSize / 2 + 2;
 
-      const muteHit = Math.abs(canvasX - muteIconX) < this.iconSize / 2 + 2 &&
-                      Math.abs(canvasY - muteIconY) < this.iconSize / 2 + 2;
-      const soloHit = Math.abs(canvasX - soloIconX) < this.iconSize / 2 + 2 &&
-                      Math.abs(canvasY - soloIconY) < this.iconSize / 2 + 2;
+      const muteHit = ((canvasX - muteIconX) ** 2 + (canvasY - badgeY) ** 2) <= (badgeRadius * badgeRadius);
+      const soloHit = ((canvasX - soloIconX) ** 2 + (canvasY - badgeY) ** 2) <= (badgeRadius * badgeRadius);
 
       if (muteHit) return { id, zone: 'mute' };
       if (soloHit) return { id, zone: 'solo' };
@@ -1221,8 +1234,10 @@ export class StageCanvas {
     this.drawScaleIndicator();
     this.drawMicrophones();
 
+    this.minDistancePixels = this.computeMinDistancePixels();
+    const anySolo = Array.from(this.tracks.values()).some(track => track.solo);
     for (const [id, track] of this.tracks) {
-      this.drawTrackNode(id, track);
+      this.drawTrackNode(id, track, this.minDistancePixels, anySolo);
     }
   }
 
@@ -1490,7 +1505,7 @@ export class StageCanvas {
     const centerX = this.stageOffsetX + this.stagePixelWidth / 2;
     const bottomY = this.stageOffsetY + this.stagePixelHeight;
 
-    // Stage is 20m wide, 15m deep - use uniform scale
+    // Stage dimensions come from shared config
     const radiusX = this.stagePixelWidth / 2;
     const radiusY = this.stagePixelHeight;
 
@@ -1528,12 +1543,13 @@ export class StageCanvas {
     ctx.lineWidth = 1;
     ctx.setLineDash([5, 5]);
 
-    // Grid spacing in meters (5m gives 4 cells across 20m width, 3 cells across 15m depth)
+    // Grid spacing in meters (5m gives ~4 cells across width, ~3 across depth)
     const gridSpacingMeters = 5;
+    const halfWidth = STAGE_CONFIG.width / 2;
 
-    // Draw vertical lines (X axis: -10m to 10m)
-    for (let xMeters = -10; xMeters <= 10; xMeters += gridSpacingMeters) {
-      const xNorm = xMeters / 10;  // Convert to -1..1
+    // Draw vertical lines (X axis: -width/2 to +width/2)
+    for (let xMeters = -halfWidth; xMeters <= halfWidth; xMeters += gridSpacingMeters) {
+      const xNorm = xMeters / halfWidth;  // Convert to -1..1
       const canvasX = this.stageOffsetX + ((xNorm + 1) / 2) * this.stagePixelWidth;
       ctx.beginPath();
       ctx.moveTo(canvasX, this.stageOffsetY);
@@ -1541,9 +1557,9 @@ export class StageCanvas {
       ctx.stroke();
     }
 
-    // Draw horizontal lines (Y axis: 0m to 15m)
-    for (let yMeters = 0; yMeters <= 15; yMeters += gridSpacingMeters) {
-      const yNorm = yMeters / 15;  // Convert to 0..1
+    // Draw horizontal lines (Y axis: 0m to depth)
+    for (let yMeters = 0; yMeters <= STAGE_CONFIG.depth; yMeters += gridSpacingMeters) {
+      const yNorm = yMeters / STAGE_CONFIG.depth;  // Convert to 0..1
       const canvasY = this.stageOffsetY + (1 - yNorm) * this.stagePixelHeight;
       ctx.beginPath();
       ctx.moveTo(this.stageOffsetX, canvasY);
@@ -1635,7 +1651,7 @@ export class StageCanvas {
    * Draw a track node with instrument-specific icon
    * Includes real-time animation (pulse/glow) based on audio level
    */
-  drawTrackNode(id, track) {
+  drawTrackNode(id, track, minDistancePixels = this.minDistancePixels, anySolo = false) {
     try {
       const ctx = this.ctx;
       const pos = this.trackToCanvas(track.x, track.y);
@@ -1644,17 +1660,12 @@ export class StageCanvas {
       const isMuted = track.muted;
 
       const color = FAMILY_COLORS[track.family] || '#888888';
-      const iconSize = this.getSmartIconSize(track);
-      const radius = this.getNodeRadius(track.gain); // For M/S positioning
+      const iconSize = this.getSmartIconSize(track, minDistancePixels);
 
       // Get or compute icon info
       const iconInfo = track.iconInfo || getIconInfo(track.name, track.family);
 
       // Check if any track has solo enabled (for dimming non-solo tracks)
-      let anySolo = false;
-      for (const [, t] of this.tracks) {
-        if (t.solo) { anySolo = true; break; }
-      }
       const isDimmed = anySolo && !track.solo && !isMuted;
       const isSoloed = track.solo;
 

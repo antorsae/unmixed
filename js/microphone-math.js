@@ -1,7 +1,7 @@
 // Microphone Math - Polar pattern calculations and stereo routing
 // Physics-based microphone response simulation
 
-import { POLAR_PATTERNS, STEREO_TECHNIQUES, applyTechniqueLayout } from './microphone-types.js';
+import { POLAR_PATTERNS, STEREO_TECHNIQUES, applyTechniqueLayout, cloneMicConfig } from './microphone-types.js';
 
 // Speed of sound at 20°C
 const SPEED_OF_SOUND = 343;
@@ -231,7 +231,7 @@ export function calculateStereoResponse(sourcePos, config, stageConfig) {
   };
 
   // Apply technique layout to get current mic positions
-  const layoutConfig = applyTechniqueLayout({ ...config });
+  const layoutConfig = applyTechniqueLayout(cloneMicConfig(config));
 
   // Base mic position (all mics relative to this)
   const micBasePos = { x: 0, y: config.micY };
