@@ -2491,11 +2491,14 @@ async function loadFromURL() {
 
     // Auto-load the profile if specified
     if (config.profile && !state.tracks.size) {
-      const profileRadio = document.querySelector(`input[name="profile"][value="${config.profile}"]`);
-      if (profileRadio) {
-        profileRadio.checked = true;
-        // Load the profile and apply config after
-        await loadSelectedProfile();
+      const profile = PROFILES[config.profile];
+      if (profile) {
+        // Update radio button for visual consistency
+        const profileRadio = document.querySelector(`input[name="profile"][value="${config.profile}"]`);
+        if (profileRadio) profileRadio.checked = true;
+
+        // Load the profile directly from config
+        await loadProfile(config.profile, profile.url, profile.fullName);
         applySharedConfig(config);
         showToast('Loaded shared configuration', 'success');
         // Clear hash to avoid re-loading on refresh
