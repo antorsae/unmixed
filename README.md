@@ -181,6 +181,15 @@ Add concert hall ambience with multiple reverb presets:
 - **Depth-Based Mode**: Instruments farther back on stage receive more reverb, creating natural depth
 - **Uniform Mode**: Equal reverb for all instruments regardless of position
 
+### Speaker XTC (Cross-Talk Cancellation)
+
+Optional speaker-only post-processing that reduces left/right cross-talk for sharper imaging:
+
+- **OFF by Default**: Designed for stereo speaker playback, not headphones
+- **Calibrated Controls**: Strength, speaker angle, speaker distance, head width, HF rolloff
+- **Smooth Updates**: Parameter changes ramp to avoid audible clicks
+- **Playback-Only**: Disabled during offline export renders
+
 ### Master Loudness & Metering
 
 Dial in overall mix loudness with clear feedback:
@@ -205,6 +214,7 @@ Your work is automatically saved:
 - Master gain (dB), auto loudness state, reverb settings
 - Full microphone configuration (technique, pattern, spacing, angle, center settings)
 - Ground reflection model selection
+- Speaker XTC (enabled + calibration settings)
 - Restored on page reload with confirmation prompt
 
 ### Sharing Arrangements
@@ -223,6 +233,7 @@ Shared settings include:
 - Microphone technique, pattern, spacing, and angle
 - Ground reflection model
 - Noise gate settings
+- Speaker XTC settings
 
 ## Anechoic Recordings
 
@@ -276,7 +287,7 @@ Source → Directivity Blend → Polar Pattern Gain → ITD Delay → Air Absorp
                                     └──────────────────────────→ ↓
                                                       Convolution Reverb
                                                               ↓
-                                                   Master Gain → Limiter → Output
+                                   Master Gain → Speaker XTC (optional) → Limiter → Output
 
 Per-Track: Mixer → AnalyserNode (for real-time level visualization)
 ```
